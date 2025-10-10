@@ -41,7 +41,7 @@ img{max-width:100%;display:block}
   gap:12px; padding:14px 20px;
 }
 .logo{display:flex; align-items:center; gap:10px; font-weight:800}
-.logo-img{height:42px; width:auto}
+.logo-img{height:120px; width:auto}
 .nav-links{display:flex; align-items:center; gap:18px}
 .nav-links a{
   color:#c5cfdb; font-weight:700; padding:8px 0;
@@ -182,3 +182,60 @@ img{max-width:100%;display:block}
 /* --- Footer --- */
 footer{border-top:1px solid var(--ring); padding:28px 16px; margin-top:60px}
 .footer-inner{display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; color:var(--muted)}
+
+/* --- video modal --- */
+.lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: grid; place-items: center; z-index: 1000; }
+.lightbox-inner { position: relative; width: min(100vw - 32px, 980px); }
+.lightbox-embed { aspect-ratio: 16 / 9; }
+.lightbox-embed iframe { width: 100%; height: 100%; border: 0; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+.lightbox-close { position: absolute; right: 8px; top: -36px; font-size: 28px; line-height: 1; background: transparent; border: 0; color: #fff; cursor: pointer; }
+
+
+/* === Featured: make the hero shorter and tighter === */
+.featured-grid {
+  /* reduce vertical gap under the hero section */
+  gap: 16px;
+  margin-bottom: 16px;
+  align-items: start;
+}
+
+/* keep a nice 16:9 visual but cap the height so it doesn't dominate */
+.story-main .hero-media {
+  aspect-ratio: 16 / 9;
+  max-height: clamp(220px, 34vw, 360px);
+  overflow: hidden;
+  border-radius: 16px;
+}
+.story-main .hero-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* tighten text spacing and clamp subhead to 2 lines */
+.story-main .story-body {
+  padding: 12px 16px;
+}
+.story-main .story-deck {
+  margin-top: 6px;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;   /* ← trims long decks so the hero stays compact */
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* --- Make News cards match Video/Home cards --- */
+.articles-page .article-deck { display: none; }              /* hide excerpts */
+.article-thumb { height: 180px; }                            /* same thumb height as videos */
+.article-title {
+  display: -webkit-box;                                      /* clamp long titles so cards stay even */
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Align Articles header (title + chips) with the card grid */
+.articles-page .page-head { padding-left: 28px; }
+@media (max-width: 980px) { .articles-page .page-head { padding-left: 16px; } }
