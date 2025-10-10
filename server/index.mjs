@@ -15,7 +15,10 @@ const app = express();
 app.use(cors({ origin: true }));
 
 const GS_API_KEY = process.env.GAMESPOT_API_KEY;
-const GS_BASE = "https://www.gamespot.com/api/articles/";
+
+// GameSpot API bases
+const GS_ARTICLES_BASE = "https://www.gamespot.com/api/articles/";
+const GS_REVIEWS_BASE  = "https://www.gamespot.com/api/reviews/";
 
 const YT_API_KEY = process.env.YT_API_KEY;
 const YT_PLAYLIST_ID =
@@ -45,7 +48,7 @@ app.get("/api/articles", async (req, res) => {
     const limit = req.query.limit ? Number(req.query.limit) : 20;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
 
-    const url = new URL(GS_BASE);
+    const url = new URL(GS_ARTICLES_BASE);
     url.searchParams.append("api_key", GS_API_KEY);
     url.searchParams.append("format", "json");
     url.searchParams.append("sort", "publish_date:desc");
@@ -78,6 +81,64 @@ app.get("/api/articles", async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Failed to fetch" });
+  }
+});
+
+// ---------- /api/reviews (GameSpot Reviews) ----------
+app.get("/api/reviews", async (req, res) => {
+  try {
+    const limit = req.query.limit ? Number(req.query.limit) : 20;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+
+    const url = new URL(GS_REVIEWS_BASE);
+    url.searchParams.append("api_key", GS_API_KEY);
+    url.searchParams.append("format", "json");
+    url.searchParams.append("sort", "publish_date:desc");
+    url.searchParams.append("limit", String(limit));
+    url.searchParams.append("offset", String(offset));
+    // keep the response lean; include score
+    url.searchParams.append(
+      "field_list",
+      "title,deck,publish_date,image,site_detail_url,score,authors"
+    );
+
+    const r = await fetch(url.toString(), {
+      headers: { "User-Agent": "GMN-News/1.0 (+server)" },
+    });
+    if (!r.ok) return res.status(502).json({ error: `Upstream ${r.status}` });
+    const j = await r.json();
+
+    const articles = (j.results || []).map((rv) => {
+      // authors can come back as array or string; normalize to string
+      let byline = null;
+      if (Array.isArray(rv.authors)) {
+        byline = rv.authors.map((a) => a?.name).filter(Boolean).join(", ") || null;
+      } else if (typeof rv.authors === "string") {
+        byline = rv.authors || null;
+      }
+      return {
+        title: rv.title,
+        link: rv.site_detail_url,
+        date: rv.publish_date?.slice(0, 10),
+        deck: rv.deck,
+        image: pickImage(rv.image),
+        score: rv.score ?? null,
+        byline,
+      };
+    });
+
+    res.json({
+      articles,
+      paging: {
+        limit,
+        offset,
+        count: articles.length,
+        hasMore: articles.length === limit,
+      },
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to fetch reviews" });
   }
 });
 
@@ -153,7 +214,8 @@ app.get("/api/videos", async (req, res) => {
 
     const playlistId = (req.query.playlistId || YT_PLAYLIST_ID).trim();
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 12));
-    const pageToken = (req.query.pageToken || "").trim();
+    // ✅ accept either ?cursor= or ?pageToken=
+    const pageToken = (req.query.cursor || req.query.pageToken || "").trim();
 
     const url = new URL("https://www.googleapis.com/youtube/v3/playlistItems");
     url.searchParams.set("part", "snippet,contentDetails");
