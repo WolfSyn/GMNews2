@@ -19,6 +19,7 @@ const GS_API_KEY = process.env.GAMESPOT_API_KEY;
 // GameSpot API bases
 const GS_ARTICLES_BASE = "https://www.gamespot.com/api/articles/";
 const GS_REVIEWS_BASE  = "https://www.gamespot.com/api/reviews/";
+const GS_RELEASES_BASE = "https://www.gamespot.com/api/releases/";
 
 const YT_API_KEY = process.env.YT_API_KEY;
 const YT_PLAYLIST_ID =
@@ -139,6 +140,72 @@ app.get("/api/reviews", async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Failed to fetch reviews" });
+  }
+});
+
+// ---------- /api/releases (GameSpot Releases) ----------
+app.get("/api/releases", async (req, res) => {
+  try {
+    const limit = req.query.limit ? Number(req.query.limit) : 20;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+
+    const url = new URL(GS_RELEASES_BASE);
+    url.searchParams.append("api_key", GS_API_KEY);
+    url.searchParams.append("format", "json");
+    url.searchParams.append("sort", "release_date:desc");
+    url.searchParams.append("limit", String(limit));
+    url.searchParams.append("offset", String(offset));
+    // keep it lean; ask for common fields if supported
+    url.searchParams.append(
+      "field_list",
+      "name,title,release_date,image,site_detail_url,platforms"
+    );
+
+    const r = await fetch(url.toString(), {
+      headers: { "User-Agent": "GMN-News/1.0 (+server)" },
+    });
+    if (!r.ok) return res.status(502).json({ error: `Upstream ${r.status}` });
+    const j = await r.json();
+
+    const releases = (j.results || []).map((it) => {
+      // title
+      const title = it.name || it.title || "Untitled";
+
+      // date
+      const date =
+        it.release_date?.slice(0, 10) ||
+        it.publish_date?.slice(0, 10) ||
+        null;
+
+      // platforms may be array of strings or objects
+      const platforms = []
+        .concat(it.platforms || it.platform || [])
+        .map((p) => (typeof p === "string" ? p : p?.name))
+        .filter(Boolean)
+        .join(", ");
+
+      return {
+        title,
+        link: it.site_detail_url,
+        date,
+        deck: platforms ? `Platforms: ${platforms}` : null,
+        image: pickImage(it.image) || null,
+      };
+    });
+
+    res.json({
+      // keep the same shape that the ArticlesPage expects
+      articles: releases,
+      paging: {
+        limit,
+        offset,
+        count: releases.length,
+        hasMore: releases.length === limit,
+      },
+    });
+  } catch (e) {
+    console.error("releases error:", e);
+    res.status(500).json({ error: "Failed to fetch releases" });
   }
 });
 
