@@ -435,7 +435,7 @@ function HomePage() {
                 <span className="chart-type-badge badge-live">LIVE</span>
               </div>
               <div className="chart-card-sub">
-                Ranked by live Twitch viewers · enriched with Steam player counts
+                Ranked by live Twitch viewers
               </div>
             </div>
             <div className="chart-updated">
@@ -489,7 +489,7 @@ function HomePage() {
 
           <div className="chart-footer">
             <span className="chart-footer-note">
-              Top 10 of 50 · Source: Twitch API + Steam Web API
+              Top 10 of 50
             </span>
             <Link to="/articles" className="chart-footer-link">
               All Articles →
