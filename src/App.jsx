@@ -10,9 +10,26 @@ import {
   useSearchParams,
   useParams,
 } from "react-router-dom";
+import {
+  AuthProvider,
+  useAuth,
+  NavUserMenu,
+  LoginPage,
+  SignUpPage,
+  ForgotPasswordPage,
+  UserProfilePage,
+  SettingsPage,
+  CommentsSection,
+  useFavorites,
+} from "./Auth";
+import { supabase } from "./supabase";
 
 export default function App() {
-  return <RootLayout />;
+  return (
+    <AuthProvider>
+      <RootLayout />
+    </AuthProvider>
+  );
 }
 
 function RootLayout() {
@@ -34,7 +51,14 @@ function RootLayout() {
           <Route path="/game/:name"     element={<GameDetailPage />} />
           <Route path="/search"         element={<SearchPage />} />
           <Route path="/digest"         element={<WeeklyDigestPage />} />
+          <Route path="/charts"          element={<ChartsPage />} />
+          <Route path="/reviews"         element={<CommunityReviewsPage />} />
           <Route path="/reviews/submit" element={<SubmitReviewPage />} />
+          <Route path="/login"           element={<LoginPage />} />
+          <Route path="/signup"          element={<SignUpPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/user/:username"  element={<UserProfilePage />} />
+          <Route path="/settings"        element={<SettingsPage />} />
           <Route path="*"               element={<NotFound />} />
         </Routes>
       </main>
@@ -144,10 +168,10 @@ function Header() {
           <div className="nav-links" data-open={open}>
             <NavLink to="/" end>Home</NavLink>
             <Link to="/articles"             className={onArticles && (tag === "all" || tag === "news")    ? "active" : ""}>News</Link>
-            <Link to="/articles?tag=reviews" className={onArticles && tag === "reviews"                    ? "active" : ""}>Reviews</Link>
             <Link to="/articles?tag=releases"className={onArticles && tag === "releases"                   ? "active" : ""}>Releases</Link>
             <NavLink to="/videos">Videos</NavLink>
             <NavLink to="/digest">Digest</NavLink>
+            <NavLink to="/reviews">Reviews</NavLink>
             <NavLink to="/tech">GMN Tech</NavLink>
           </div>
 
@@ -155,6 +179,7 @@ function Header() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
           </NavLink>
 
+          <NavUserMenu />
           <div className="nav-live">
             <span className="live-dot" />
             {monthLabel}
@@ -377,6 +402,7 @@ function HomePage() {
 
   const chart  = chartData?.chart  || [];
   const rising = chartData?.rising || [];
+  const { favorites, toggleFavorite, isFavorite } = useFavorites();
 
   const PLATFORM_KEYWORDS = {
     pc:          /(PC|Windows|Steam|Epic)/i,
@@ -435,7 +461,7 @@ function HomePage() {
                 <span className="chart-type-badge badge-live">LIVE</span>
               </div>
               <div className="chart-card-sub">
-                Ranked by live Twitch viewers
+                Ranked by live Twitch viewers · enriched with Steam player counts
               </div>
             </div>
             <div className="chart-updated">
@@ -482,6 +508,20 @@ function HomePage() {
                     <span className={`trend-pill ${trendClass(item.trend)}`}>
                       {item.trendLabel}
                     </span>
+                    <button
+                      onClick={e => { e.stopPropagation(); toggleFavorite(item); }}
+                      title={isFavorite(item.name) ? "Remove from favorites" : "Add to favorites"}
+                      style={{
+                        background: "transparent", border: "none", cursor: "pointer",
+                        fontSize: 16, padding: "2px 4px", flexShrink: 0,
+                        color: isFavorite(item.name) ? "var(--red)" : "var(--muted)",
+                        transition: "color .15s, transform .15s",
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.transform = "scale(1.2)"}
+                      onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+                    >
+                      {isFavorite(item.name) ? "♥" : "♡"}
+                    </button>
                   </div>
                 ))
             }
@@ -489,10 +529,10 @@ function HomePage() {
 
           <div className="chart-footer">
             <span className="chart-footer-note">
-              Top 10 of 50
+              Top 10 of 50 · Source: Twitch API + Steam Web API
             </span>
-            <Link to="/articles" className="chart-footer-link">
-              All Articles →
+            <Link to="/charts" className="chart-footer-link">
+              View All 50 Games →
             </Link>
           </div>
         </div>
@@ -884,6 +924,12 @@ function ArticleDetailPage() {
               <div dangerouslySetInnerHTML={{ __html: data.html }} />
             </div>
           )}
+
+          {/* Comments */}
+          <CommentsSection
+            articleUrl={url}
+            articleTitle={data?.title || title}
+          />
         </>
       )}
     </div>
@@ -1616,59 +1662,519 @@ function WeeklyDigestPage() {
 }
 
 /* ─────────────────────────────────────────
-   SUBMIT REVIEW PAGE  (GMN Originals)
+   GAME DROPDOWN COMPONENT
+───────────────────────────────────────── */
+function GameDropdown({ value, onChange, inputStyle }) {
+  const API_ORIGIN = useApiOrigin();
+  const [games,       setGames]       = useState([]);
+  const [search,      setSearch]      = useState(value || "");
+  const [open,        setOpen]        = useState(false);
+  const [customMode,  setCustomMode]  = useState(false);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${API_ORIGIN}/api/charts`);
+        if (r.ok) {
+          const d = await r.json();
+          setGames((d.chart || []).map(g => g.name)); // all 50 games
+        }
+      } catch {}
+    })();
+  }, [API_ORIGIN]);
+
+  // Close on outside click
+  useEffect(() => {
+    function handle(e) {
+      if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, []);
+
+  const filtered = games.filter(g => g.toLowerCase().includes(search.toLowerCase())).slice(0, 20);
+
+  function selectGame(name) {
+    setSearch(name);
+    onChange(name);
+    setOpen(false);
+  }
+
+  if (customMode) {
+    return (
+      <div>
+        <input
+          value={search}
+          onChange={e => { setSearch(e.target.value); onChange(e.target.value); }}
+          placeholder="Type game name..."
+          style={inputStyle}
+          onFocus={e => e.target.style.borderColor = "var(--blue)"}
+          onBlur={e => e.target.style.borderColor = "var(--ring-md)"}
+          autoFocus
+        />
+        <button type="button" onClick={() => { setCustomMode(false); setSearch(""); onChange(""); }}
+          style={{ marginTop: 6, fontSize: 12, color: "var(--muted)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+          ← Pick from list
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={containerRef} style={{ position: "relative" }}>
+      <div style={{ position: "relative" }}>
+        <input
+          value={search}
+          onChange={e => { setSearch(e.target.value); onChange(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          placeholder="Search or select a game..."
+          style={{ ...inputStyle, paddingRight: 36 }}
+          onKeyDown={e => e.key === "Escape" && setOpen(false)}
+        />
+        <span style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", color: "var(--muted)", pointerEvents: "none", fontSize: 12 }}>▼</span>
+      </div>
+
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 200,
+          background: "var(--panel2)", border: "1px solid var(--ring-md)",
+          borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+          maxHeight: 280, overflowY: "auto",
+        }}>
+          {filtered.length > 0 ? (
+            filtered.map(g => (
+              <div key={g} onMouseDown={() => selectGame(g)}
+                style={{
+                  padding: "10px 14px", cursor: "pointer", fontSize: 14,
+                  fontWeight: 600, transition: "background .1s",
+                  background: value === g ? "rgba(255,50,50,0.1)" : "transparent",
+                  color: value === g ? "var(--red)" : "var(--text)",
+                  borderBottom: "1px solid var(--ring)",
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.05)"}
+                onMouseLeave={e => e.currentTarget.style.background = value === g ? "rgba(255,50,50,0.1)" : "transparent"}
+              >{g}</div>
+            ))
+          ) : (
+            <div style={{ padding: "10px 14px", fontSize: 13, color: "var(--muted)" }}>
+              No matches found
+            </div>
+          )}
+          {/* Custom entry option */}
+          <div onMouseDown={() => { setCustomMode(true); setOpen(false); }}
+            style={{ padding: "10px 14px", cursor: "pointer", fontSize: 13, color: "var(--blue)", fontWeight: 700, borderTop: "1px solid var(--ring)" }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(77,166,255,0.08)"}
+            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+          >
+            + Enter a different game
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────
+   CHARTS PAGE — Full Hot 50
+───────────────────────────────────────── */
+function ChartsPage() {
+  const API_ORIGIN = useApiOrigin();
+  const [chartData,    setChartData]    = useState(null);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState(null);
+  const [platformFilter, setPlatformFilter] = useState("all");
+  const { favorites, toggleFavorite, isFavorite } = useFavorites();
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${API_ORIGIN}/api/charts`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        setChartData(await r.json());
+      } catch (e) {
+        setError(e.message);
+      } finally { setLoading(false); }
+    })();
+  }, [API_ORIGIN]);
+
+  const chart = chartData?.chart || [];
+  const updatedAt = chartData?.updatedAt
+    ? new Date(chartData.updatedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+    : null;
+
+  const PLATFORM_KEYWORDS = {
+    pc:          /(PC|Windows|Steam|Epic)/i,
+    playstation: /(PlayStation|PS5|PS4)/i,
+    xbox:        /(Xbox|Series X|Series S)/i,
+    nintendo:    /(Nintendo|Switch)/i,
+    mobile:      /(Mobile|iOS|Android)/i,
+  };
+
+  const filtered = platformFilter === "all"
+    ? chart
+    : chart.filter(g => PLATFORM_KEYWORDS[platformFilter]?.test(g.name + " " + (g.platform || "")));
+
+  return (
+    <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 20px 60px" }}>
+
+      {/* Header */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--red)", letterSpacing: "1.2px", marginBottom: 6 }}>LIVE RANKINGS</div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+          <h1 style={{ fontFamily: "var(--font-display)", fontSize: "clamp(32px,6vw,52px)", fontWeight: 900, textTransform: "uppercase", margin: 0 }}>
+            GMN <span style={{ color: "var(--red)" }}>Hot 50</span>
+          </h1>
+          <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 600 }}>
+            {updatedAt ? `Updated ${updatedAt}` : "Loading…"}
+          </span>
+        </div>
+        <p style={{ color: "var(--muted2)", fontSize: 14, margin: "6px 0 0" }}>
+          All 50 most-watched games on Twitch right now · enriched with Steam player counts
+        </p>
+      </div>
+
+      {/* Platform filter */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+        {[
+          { key: "all",         label: "All Platforms" },
+          { key: "pc",          label: "PC" },
+          { key: "playstation", label: "PlayStation" },
+          { key: "xbox",        label: "Xbox" },
+          { key: "nintendo",    label: "Nintendo" },
+          { key: "mobile",      label: "Mobile" },
+        ].map(p => (
+          <button key={p.key}
+            onClick={() => setPlatformFilter(p.key)}
+            className={`platform-btn ${platformFilter === p.key ? "active" : ""}`}>
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Error */}
+      {error && (
+        <div style={{ padding: "14px 18px", color: "var(--muted)", fontSize: 13, background: "var(--panel)", borderRadius: 10, marginBottom: 16 }}>
+          ⚠️ {error}
+        </div>
+      )}
+
+      {/* Full chart */}
+      <div className="chart-card">
+        <div className="chart-card-header">
+          <div className="chart-card-title">
+            🏆 Most Watched Games
+            <span className="chart-type-badge badge-live">LIVE</span>
+          </div>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>{filtered.length} games</span>
+        </div>
+
+        <div className="chart-rows">
+          {loading ? (
+            <ChartSkeleton rows={10} />
+          ) : filtered.length === 0 ? (
+            <div style={{ padding: "24px 18px", color: "var(--muted)", textAlign: "center", fontSize: 14 }}>
+              No games found for this platform filter.
+            </div>
+          ) : (
+            filtered.map(item => (
+              <div className="chart-row" key={item.rank}
+                onClick={() => window.location.href = `/game/${encodeURIComponent(item.name)}`}
+                style={{ cursor: "pointer" }}>
+                <div className={`rank-num ${rankClass(item.rank)}`}>{item.rank}</div>
+                <div className="game-thumb-wrap">
+                  {item.coverUrl
+                    ? <img src={item.coverUrl} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    : <div className="game-thumb-emoji">🎮</div>
+                  }
+                </div>
+                <div className="game-info">
+                  <div className="game-name">{item.name}</div>
+                  <div className="game-platform">
+                    {item.steamLabel
+                      ? `${item.viewersLabel} viewers · ${item.steamLabel} on Steam`
+                      : `${item.viewersLabel} viewers on Twitch`
+                    }
+                  </div>
+                </div>
+                <div className="game-bar-wrap">
+                  <div className="game-bar-bg">
+                    <div className="game-bar-fill" style={{ width: `${item.barPct}%`, background: barColor(item.rank) }} />
+                  </div>
+                  <div className="game-bar-num">{item.viewersLabel}</div>
+                </div>
+                <span className={`trend-pill ${trendClass(item.trend)}`}>{item.trendLabel}</span>
+                <button
+                  onClick={e => { e.stopPropagation(); toggleFavorite(item); }}
+                  title={isFavorite(item.name) ? "Remove from favorites" : "Save to favorites"}
+                  style={{
+                    background: "transparent", border: "none", cursor: "pointer",
+                    fontSize: 16, padding: "2px 4px", flexShrink: 0,
+                    color: isFavorite(item.name) ? "var(--red)" : "var(--muted)",
+                    transition: "color .15s, transform .15s",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.transform = "scale(1.2)"}
+                  onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+                >
+                  {isFavorite(item.name) ? "♥" : "♡"}
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="chart-footer">
+          <span className="chart-footer-note">Source: Twitch Helix API + Steam Web API</span>
+          <Link to="/reviews/submit" className="chart-footer-link">Write a Review →</Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────
+   COMMUNITY REVIEWS PAGE
+───────────────────────────────────────── */
+function CommunityReviewsPage() {
+  const [reviews, setReviews] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [sortBy,  setSortBy]  = useState("recent");
+  const [gameFilter, setGameFilter] = useState("all");
+
+  useEffect(() => { fetchReviews(); }, []);
+
+  async function fetchReviews() {
+    try {
+      const { data } = await supabase
+        .from("reviews")
+        .select("*, profiles(username, avatar_url)")
+        .order("created_at", { ascending: false });
+      setReviews(data || []);
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  }
+
+
+
+  const scoreLabel = s => s >= 90 ? "Exceptional" : s >= 80 ? "Great" : s >= 70 ? "Good" : s >= 60 ? "Mixed" : "Poor";
+  const scoreColor = s => s >= 90 ? "var(--green)" : s >= 80 ? "var(--gold)" : s >= 70 ? "var(--blue)" : s >= 60 ? "var(--muted)" : "var(--red)";
+
+  const allGames = ["all", ...Array.from(new Set(reviews.map(r => r.game_name))).sort()];
+
+  const filtered = reviews
+    .filter(r => gameFilter === "all" || r.game_name === gameFilter)
+    .sort((a, b) => sortBy === "top"
+      ? b.score - a.score
+      : new Date(b.created_at) - new Date(a.created_at)
+    );
+
+  return (
+    <div style={{ maxWidth: 860, margin: "0 auto", padding: "32px 20px 60px" }}>
+
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 24 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--red)", letterSpacing: "1.2px", marginBottom: 6 }}>GMN COMMUNITY</div>
+          <h1 style={{ fontFamily: "var(--font-display)", fontSize: "clamp(28px,5vw,40px)", fontWeight: 900, textTransform: "uppercase", margin: 0 }}>
+            Player Reviews
+          </h1>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {["recent", "top"].map(f => (
+            <button key={f} onClick={() => setSortBy(f)}
+              className={`chip ${sortBy === f ? "is-active" : ""}`}
+              style={{ fontSize: 12 }}>
+              {f === "recent" ? "Most Recent" : "Top Rated"}
+            </button>
+          ))}
+          <Link to="/reviews/submit" style={{
+            padding: "7px 16px", borderRadius: 999, background: "var(--red)",
+            color: "#fff", fontWeight: 700, fontSize: 12, textDecoration: "none",
+          }}>+ Write Review</Link>
+        </div>
+      </div>
+
+      {/* Game filter tabs */}
+      {!loading && reviews.length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20, paddingBottom: 16, borderBottom: "1px solid var(--ring)" }}>
+          {allGames.map(g => (
+            <button key={g} onClick={() => setGameFilter(g)}
+              style={{
+                padding: "5px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700,
+                cursor: "pointer", transition: ".15s", border: "1px solid",
+                borderColor: gameFilter === g ? "transparent" : "var(--ring-md)",
+                background: gameFilter === g ? "var(--text)" : "transparent",
+                color: gameFilter === g ? "var(--bg)" : "var(--muted2)",
+              }}>
+              {g === "all" ? "All Games" : g}
+              {g !== "all" && (
+                <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.7 }}>
+                  {reviews.filter(r => r.game_name === g).length}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Reviews list */}
+      {loading ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {[1,2,3].map(i => <div key={i} className="skeleton-box" style={{ height: 160, borderRadius: 12 }} />)}
+        </div>
+      ) : filtered.length === 0 && gameFilter !== "all" ? (
+        <div style={{ textAlign: "center", padding: "60px 20px" }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>🎮</div>
+          <p style={{ color: "var(--muted2)", marginBottom: 8, fontWeight: 700, fontSize: 16 }}>No reviews yet for {gameFilter}</p>
+          <p style={{ color: "var(--muted)", fontSize: 14, marginBottom: 20 }}>Be the first to review this game!</p>
+          <Link to="/reviews/submit" className="btn-primary">Write a Review</Link>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "60px 20px" }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>🎮</div>
+          <p style={{ color: "var(--muted2)", marginBottom: 20 }}>No reviews yet — be the first!</p>
+          <Link to="/reviews/submit" className="btn-primary">Write the First Review</Link>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {filtered.map(r => {
+            const username = r.profiles?.username || "Anonymous";
+            const initials = username.slice(0, 2).toUpperCase();
+            return (
+              <div key={r.id} style={{ background: "var(--panel)", border: "1px solid var(--ring)", borderRadius: 14, padding: 20, position: "relative" }}>
+
+                {/* Top row */}
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 16, marginBottom: 12 }}>
+                  <div style={{ textAlign: "center", flexShrink: 0, minWidth: 52 }}>
+                    <div style={{ fontFamily: "var(--font-display)", fontSize: 40, fontWeight: 900, color: scoreColor(r.score), lineHeight: 1 }}>
+                      {r.score}
+                    </div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: scoreColor(r.score), letterSpacing: "0.4px" }}>
+                      {scoreLabel(r.score)}
+                    </div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <a href={`/game/${encodeURIComponent(r.game_name)}`}
+                      style={{ fontWeight: 800, fontSize: 18, color: "var(--text)", textDecoration: "none", fontFamily: "var(--font-display)", textTransform: "uppercase", letterSpacing: "0.3px" }}>
+                      {r.game_name}
+                    </a>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                      <a href={`/user/${username}`} style={{ display: "flex", alignItems: "center", gap: 6, textDecoration: "none" }}>
+                        <div style={{ width: 22, height: 22, borderRadius: "50%", background: r.profiles?.avatar_url ? "transparent" : "var(--red)", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff" }}>
+                          {r.profiles?.avatar_url
+                            ? <img src={r.profiles.avatar_url} alt={username} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                            : initials}
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted2)" }}>{username}</span>
+                      </a>
+                      <span style={{ fontSize: 11, color: "var(--muted)" }}>{timeAgo(r.created_at)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <p style={{ color: "var(--muted2)", fontSize: 14, lineHeight: 1.6, margin: "0 0 12px" }}>
+                  {r.body}
+                </p>
+
+                {(r.gameplay || r.story || r.value) && (
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                    {[
+                      { label: "Gameplay", val: r.gameplay },
+                      { label: "Story",    val: r.story    },
+                      { label: "Value",    val: r.value    },
+                    ].filter(s => s.val).map(s => (
+                      <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>{s.label}</span>
+                        <span style={{ fontSize: 13, fontWeight: 800, color: scoreColor(s.val) }}>{s.val}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────
+   SUBMIT REVIEW PAGE  (saves to Supabase)
 ───────────────────────────────────────── */
 function SubmitReviewPage() {
-  const [form, setForm]       = useState({ game: "", score: 80, summary: "", gameplay: 80, story: 80, value: 80, reviewer: "" });
+  const { user, profile } = useAuth();
+  const navigate = useNavigate();
+  const [form, setForm]         = useState({ game: "", score: 80, body: "", gameplay: 80, story: 80, value: 80 });
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError]         = useState("");
 
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  useEffect(() => { if (!user) navigate("/login", { state: { from: "/reviews/submit" } }); }, [user]);
+  const API_ORIGIN = useApiOrigin();
 
+  const set   = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const label = s => s >= 90 ? "Exceptional" : s >= 80 ? "Great" : s >= 70 ? "Good" : s >= 60 ? "Mixed" : "Poor";
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!form.game.trim() || !form.body.trim()) return setError("Game title and review are required.");
+    setSubmitting(true); setError("");
+    try {
+      const { error: err } = await supabase.from("reviews").insert({
+        user_id:   user.id,
+        game_name: form.game.trim(),
+        score:     form.score,
+        gameplay:  form.gameplay,
+        story:     form.story,
+        value:     form.value,
+        body:      form.body.trim(),
+      });
+      if (err) throw err;
+      setSubmitted(true);
+    } catch (e) {
+      setError(e.message || "Failed to submit review. Please try again.");
+    } finally { setSubmitting(false); }
+  }
 
   if (submitted) return (
     <div style={{ maxWidth: 600, margin: "60px auto", padding: "0 20px", textAlign: "center" }}>
       <div style={{ fontSize: 48, marginBottom: 16 }}>🎮</div>
-      <h1 style={{ fontFamily: "var(--font-display)", fontSize: 32, fontWeight: 900, textTransform: "uppercase", marginBottom: 12 }}>Review Submitted!</h1>
-      <p style={{ color: "var(--muted2)", marginBottom: 24 }}>Thanks for contributing to GMN News. Your review of <strong>{form.game}</strong> has been received.</p>
-      <a href="/" className="btn-primary">Back to Home</a>
+      <h1 style={{ fontFamily: "var(--font-display)", fontSize: 32, fontWeight: 900, textTransform: "uppercase", marginBottom: 12 }}>Review Posted!</h1>
+      <p style={{ color: "var(--muted2)", marginBottom: 24 }}>Your review of <strong>{form.game}</strong> is now live on GMN News.</p>
+      <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+        <Link to="/reviews" className="btn-primary">See All Reviews</Link>
+        <Link to="/" className="btn-secondary">Back to Home</Link>
+      </div>
     </div>
   );
+
+  const inputStyle = { width: "100%", padding: "12px 14px", background: "var(--panel)", border: "1px solid var(--ring-md)", borderRadius: 10, color: "var(--text)", fontSize: 15, fontFamily: "var(--font-body)", outline: "none" };
+  const labelStyle = { display: "block", fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6, letterSpacing: "0.4px" };
 
   return (
     <div style={{ maxWidth: 680, margin: "0 auto", padding: "32px 20px 60px" }}>
       <div style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--red)", letterSpacing: "1.2px", marginBottom: 6 }}>GMN ORIGINALS</div>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--red)", letterSpacing: "1.2px", marginBottom: 6 }}>GMN COMMUNITY</div>
         <h1 style={{ fontFamily: "var(--font-display)", fontSize: "clamp(28px,5vw,40px)", fontWeight: 900, textTransform: "uppercase", margin: "0 0 8px" }}>
-          Submit a Review
+          Write a Review
         </h1>
-        <p style={{ color: "var(--muted2)", fontSize: 14, margin: 0 }}>Share your take. Your voice makes GMN original.</p>
+        <p style={{ color: "var(--muted2)", fontSize: 14, margin: 0 }}>
+          Posting as <Link to={`/user/${profile?.username}`} style={{ color: "var(--red)", fontWeight: 700 }}>{profile?.username}</Link>
+        </p>
       </div>
 
-      <form
-        action="https://formspree.io/f/mqaybeaw"
-        method="POST"
-        onSubmit={() => setSubmitted(true)}
-        style={{ display: "flex", flexDirection: "column", gap: 18 }}
-      >
-        <input type="hidden" name="_subject" value={`[GMN Review] ${form.game}`} />
-
-        {/* Game name */}
-        <div>
-          <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6, letterSpacing: "0.4px" }}>GAME TITLE *</label>
-          <input name="game" required value={form.game} onChange={e => set("game", e.target.value)}
-            placeholder="e.g. Monster Hunter Wilds"
-            style={{ width: "100%", padding: "12px 14px", background: "var(--panel)", border: "1px solid var(--ring-md)", borderRadius: 10, color: "var(--text)", fontSize: 15, fontFamily: "var(--font-body)", outline: "none" }}
-          />
+      {error && (
+        <div style={{ background: "rgba(255,50,50,0.12)", border: "1px solid rgba(255,50,50,0.25)", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#ff6b6b", marginBottom: 16 }}>
+          {error}
         </div>
+      )}
 
-        {/* Reviewer */}
+      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+        {/* Game dropdown */}
         <div>
-          <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6, letterSpacing: "0.4px" }}>YOUR NAME / HANDLE *</label>
-          <input name="reviewer" required value={form.reviewer} onChange={e => set("reviewer", e.target.value)}
-            placeholder="e.g. GamerTag123"
-            style={{ width: "100%", padding: "12px 14px", background: "var(--panel)", border: "1px solid var(--ring-md)", borderRadius: 10, color: "var(--text)", fontSize: 15, fontFamily: "var(--font-body)", outline: "none" }}
-          />
+          <label style={labelStyle}>SELECT GAME *</label>
+          <GameDropdown value={form.game} onChange={v => set("game", v)} inputStyle={inputStyle} />
         </div>
 
         {/* Score sliders */}
@@ -1686,7 +2192,6 @@ function SubmitReviewPage() {
                 <span style={{ fontSize: 12, color: "var(--muted)" }}>— {label(form[s.key])}</span>
               </div>
             </div>
-            <input type="hidden" name={s.key} value={form[s.key]} />
             <input type="range" min="0" max="100" value={form[s.key]}
               onChange={e => set(s.key, Number(e.target.value))}
               style={{ width: "100%", accentColor: "var(--red)" }}
@@ -1694,17 +2199,24 @@ function SubmitReviewPage() {
           </div>
         ))}
 
-        {/* Summary */}
+        {/* Review body */}
         <div>
-          <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6, letterSpacing: "0.4px" }}>YOUR REVIEW *</label>
-          <textarea name="summary" required rows={6} value={form.summary} onChange={e => set("summary", e.target.value)}
-            placeholder="Write your honest take on the game. What did you love? What fell short?"
-            style={{ width: "100%", padding: "12px 14px", background: "var(--panel)", border: "1px solid var(--ring-md)", borderRadius: 10, color: "var(--text)", fontSize: 15, fontFamily: "var(--font-body)", outline: "none", resize: "vertical", minHeight: 140 }}
+          <label style={labelStyle}>YOUR REVIEW *</label>
+          <textarea required rows={6} value={form.body} onChange={e => set("body", e.target.value)}
+            placeholder="Write your honest take. What did you love? What fell short?"
+            style={{ ...inputStyle, resize: "vertical", minHeight: 140 }}
+            onFocus={e => e.target.style.borderColor = "var(--blue)"}
+            onBlur={e => e.target.style.borderColor = "var(--ring-md)"}
           />
         </div>
 
-        <button type="submit" className="btn-primary" style={{ alignSelf: "flex-start", padding: "12px 28px", fontSize: 15, borderRadius: 12 }}>
-          Submit Review →
+        <button type="submit" disabled={submitting} style={{
+          alignSelf: "flex-start", padding: "12px 28px", fontSize: 15, borderRadius: 12,
+          background: "var(--red)", border: "none", color: "#fff", fontWeight: 700,
+          cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1,
+          fontFamily: "var(--font-display)", letterSpacing: "0.5px", textTransform: "uppercase",
+        }}>
+          {submitting ? "Posting…" : "Post Review →"}
         </button>
       </form>
     </div>
