@@ -4,8 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "api":"node server/index.mjs",
-    "web":"vite",
+    "api": "node server/index.mjs",
+    "web": "vite",
     "dev:client": "vite",
     "dev:server": "nodemon --watch server --ext mjs,js,json --exec \"node server/index.mjs\"",
     "server": "nodemon server/index.mjs",
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
+    "@supabase/supabase-js": "^2.102.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
@@ -31,6 +32,7 @@
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.0",
+    "baseline-browser-mapping": "^2.10.10",
     "concurrently": "^9.2.1",
     "eslint": "^9.33.0",
     "eslint-plugin-react-hooks": "^5.2.0",
@@ -40,4 +42,5 @@
     "vite": "^7.1.2"
   }
 }
+
 
