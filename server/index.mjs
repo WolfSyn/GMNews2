@@ -525,6 +525,39 @@ app.get("/api/articles", async (req, res) => {
   } catch (e) { res.status(500).json({ error: "Failed to fetch" }); }
 });
 
+// ─────────────────────────────────────────────────────────────
+//  /api/articles/search  —  Search GameSpot articles by keyword
+// ─────────────────────────────────────────────────────────────
+app.get("/api/articles/search", async (req, res) => {
+  try {
+    const q      = req.query.q || "";
+    const limit  = req.query.limit  ? Number(req.query.limit)  : 20;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    if (!q.trim()) return res.json({ articles: [], paging: { count: 0, hasMore: false } });
+
+    const url = new URL(GS_ARTICLES_BASE);
+    url.searchParams.append("api_key", GS_API_KEY);
+    url.searchParams.append("format",  "json");
+    url.searchParams.append("sort",    "publish_date:desc");
+    url.searchParams.append("limit",   String(limit));
+    url.searchParams.append("offset",  String(offset));
+    // GameSpot filter param: search by title
+    url.searchParams.append("filter",  `title:${q}`);
+
+    const r = await fetch(url.toString(), { headers: { "User-Agent": "GMN-News/1.0 (+server)" } });
+    if (!r.ok) return res.status(502).json({ error: `Upstream ${r.status}` });
+    const j = await r.json();
+    const articles = (j.results || []).map(a => ({
+      title: a.title,
+      link:  a.site_detail_url,
+      date:  a.publish_date?.slice(0, 10),
+      deck:  a.deck,
+      image: pickImage(a.image),
+    }));
+    res.json({ articles, paging: { limit, offset, count: articles.length, hasMore: articles.length === limit } });
+  } catch (e) { res.status(500).json({ error: "Search failed" }); }
+});
+
 app.get("/api/reviews", async (req, res) => {
   try {
     const limit  = req.query.limit  ? Number(req.query.limit)  : 20;
