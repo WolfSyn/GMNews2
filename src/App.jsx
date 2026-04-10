@@ -1261,16 +1261,17 @@ function PrivacyPage() {
 function SearchPage() {
   const API_BASE   = useApiBase();
   const API_ORIGIN = useApiOrigin();
-  const [query, setQuery]     = useState("");
-  const [results, setResults] = useState([]);
-  const [games, setGames]     = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [query, setQuery]       = useState("");
+  const [inputVal, setInputVal] = useState("");
+  const [articles, setArticles] = useState([]);
+  const [games,    setGames]    = useState([]);
+  const [loading,  setLoading]  = useState(false);
   const [searched, setSearched] = useState(false);
   const inputRef = useRef(null);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  // Pre-load chart for game search
+  // Pre-load all 50 chart games for game search
   useEffect(() => {
     (async () => {
       try {
@@ -1282,107 +1283,170 @@ function SearchPage() {
 
   async function doSearch(q) {
     if (!q.trim()) return;
-    setLoading(true); setSearched(true);
+    setQuery(q);
+    setLoading(true);
+    setSearched(true);
+    setArticles([]);
     try {
-      const r = await fetch(`${API_BASE}?limit=20&offset=0`);
-      if (!r.ok) throw new Error();
-      const { articles } = await r.json();
-      const lower = q.toLowerCase();
-      setResults((articles || []).filter(a =>
-        a.title?.toLowerCase().includes(lower) ||
-        a.deck?.toLowerCase().includes(lower)
-      ));
-    } catch { setResults([]); } finally { setLoading(false); }
+      // Use the dedicated search endpoint that queries GameSpot directly by keyword
+      const searchBase = API_BASE.replace("/api/articles", "/api/articles/search");
+      const r = await fetch(`${searchBase}?q=${encodeURIComponent(q)}&limit=20`);
+      if (r.ok) {
+        const { articles: arts } = await r.json();
+        setArticles(arts || []);
+      } else {
+        // Fallback: local filter across 3 pages if search endpoint fails
+        const [r1, r2, r3] = await Promise.all([
+          fetch(`${API_BASE}?limit=20&offset=0`),
+          fetch(`${API_BASE}?limit=20&offset=20`),
+          fetch(`${API_BASE}?limit=20&offset=40`),
+        ]);
+        const lower = q.toLowerCase();
+        let all = [];
+        for (const rx of [r1, r2, r3]) {
+          if (rx.ok) {
+            const { articles: arts } = await rx.json();
+            all = [...all, ...(arts || [])];
+          }
+        }
+        setArticles(all.filter(a =>
+          a.title?.toLowerCase().includes(lower) ||
+          a.deck?.toLowerCase().includes(lower)
+        ));
+      }
+    } catch { setArticles([]); } finally { setLoading(false); }
   }
 
-  const gameResults = query.length > 1
-    ? games.filter(g => g.name.toLowerCase().includes(query.toLowerCase())).slice(0, 5)
+  // Live game filtering as user types
+  const gameResults = inputVal.length > 1
+    ? games.filter(g => g.name.toLowerCase().includes(inputVal.toLowerCase())).slice(0, 5)
     : [];
 
   return (
-    <div style={{ maxWidth: 860, margin: "0 auto", padding: "32px 20px" }}>
-      <h1 style={{ fontFamily: "var(--font-display)", fontSize: 36, fontWeight: 900, textTransform: "uppercase", marginBottom: 20 }}>
+    <div style={{ maxWidth: 860, margin: "0 auto", padding: "32px 20px 60px" }}>
+      <h1 style={{ fontFamily: "var(--font-display)", fontSize: 36, fontWeight: 900, textTransform: "uppercase", marginBottom: 6 }}>
         Search GMN
       </h1>
-      <div style={{ position: "relative", marginBottom: 24 }}>
+      <p style={{ color: "var(--muted)", fontSize: 14, marginBottom: 20 }}>
+        Search games on the Hot 50 or find articles from our news feed
+      </p>
+
+      {/* Search input */}
+      <div style={{ position: "relative", marginBottom: 28 }}>
         <input
           ref={inputRef}
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && doSearch(query)}
-          placeholder="Search games, news, reviews…"
+          value={inputVal}
+          onChange={e => setInputVal(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && doSearch(inputVal)}
+          placeholder="Search games, news, GTA, Mario, Fortnite…"
           style={{
-            width: "100%", padding: "14px 50px 14px 18px",
+            width: "100%", padding: "14px 80px 14px 18px",
             background: "var(--panel)", border: "1px solid var(--ring-md)",
             borderRadius: 12, color: "var(--text)", fontSize: 16,
             fontFamily: "var(--font-body)", outline: "none",
+            transition: "border-color .15s",
           }}
+          onFocus={e => e.target.style.borderColor = "var(--blue)"}
+          onBlur={e => e.target.style.borderColor = "var(--ring-md)"}
         />
         <button
-          onClick={() => doSearch(query)}
+          onClick={() => doSearch(inputVal)}
           style={{
-            position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+            position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
             background: "var(--red)", border: "none", borderRadius: 8,
-            color: "#fff", padding: "6px 14px", fontWeight: 700, cursor: "pointer",
+            color: "#fff", padding: "8px 16px", fontWeight: 700,
+            fontSize: 13, cursor: "pointer",
           }}
-        >Go</button>
+        >Search</button>
       </div>
 
-      {/* Game results from chart */}
+      {/* Live game results as user types */}
       {gameResults.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <div className="section-title" style={{ fontSize: 13, marginBottom: 10, color: "var(--muted)" }}>GAMES</div>
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)", letterSpacing: "0.8px", marginBottom: 10 }}>
+            GAMES ON GMN HOT 50
+          </div>
           {gameResults.map(g => (
             <a key={g.rank} href={`/game/${encodeURIComponent(g.name)}`}
-              style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid var(--ring)", textDecoration: "none", color: "var(--text)" }}>
-              <div style={{ width: 36, height: 36, borderRadius: 8, overflow: "hidden", background: "var(--panel2)", flexShrink: 0 }}>
+              style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", marginBottom: 6, background: "var(--panel)", border: "1px solid var(--ring)", borderRadius: 10, textDecoration: "none", color: "var(--text)", transition: "border-color .15s" }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = "var(--ring-md)"}
+              onMouseLeave={e => e.currentTarget.style.borderColor = "var(--ring)"}
+            >
+              <div style={{ width: 38, height: 38, borderRadius: 8, overflow: "hidden", background: "var(--panel2)", flexShrink: 0, border: "1px solid var(--ring)" }}>
                 {g.coverUrl && <img src={g.coverUrl} alt={g.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
               </div>
-              <div>
-                <div style={{ fontWeight: 700 }}>{g.name}</div>
-                <div style={{ fontSize: 12, color: "var(--muted)" }}>#{g.rank} on GMN Hot 50 · {g.viewersLabel} viewers</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>{g.name}</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>#{g.rank} on GMN Hot 50 · {g.viewersLabel} viewers</div>
               </div>
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>View →</span>
             </a>
           ))}
         </div>
       )}
 
-      {/* Article results */}
+      {/* Article search results */}
       {searched && (
         <div>
-          <div className="section-title" style={{ fontSize: 13, marginBottom: 10, color: "var(--muted)" }}>
-            {loading ? "SEARCHING…" : `ARTICLES (${results.length})`}
+          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)", letterSpacing: "0.8px", marginBottom: 14 }}>
+            {loading ? "SEARCHING ARTICLES…" : `NEWS ARTICLES (${articles.length} results for "${query}")`}
           </div>
-          {!loading && results.length === 0 && <p style={{ color: "var(--muted)" }}>No articles found for "{query}"</p>}
-          <div className="articles-grid">
-            {results.map((a, i) => {
-              const url = `/article-detail?url=${encodeURIComponent(a.link)}&title=${encodeURIComponent(a.title)}`;
-              return (
-                <article className="article-card" key={i}>
-                  <a href={url}>
-                    {a.image
-                      ? <img className="article-thumb" src={a.image} alt={a.title} loading="lazy" />
-                      : <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
-                    }
-                  </a>
+
+          {loading && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+              {[1,2,3,4,5,6].map(i => (
+                <div className="article-card" key={i}>
+                  <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
                   <div className="article-body">
-                    <div className="article-meta">
-                      <span className="badge">NEWS</span>
-                      {a.date && <time className="micro" dateTime={a.date}>{timeAgo(a.date)}</time>}
-                    </div>
-                    <h2 className="article-title"><a href={url}>{a.title}</a></h2>
+                    <div className="skeleton-box" style={{ height: 12, width: "60%", borderRadius: 6, margin: "6px 0" }} />
+                    <div className="skeleton-box" style={{ height: 14, borderRadius: 6 }} />
                   </div>
-                </article>
-              );
-            })}
-          </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!loading && articles.length === 0 && (
+            <div style={{ textAlign: "center", padding: "40px 20px" }}>
+              <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
+              <p style={{ color: "var(--muted2)", marginBottom: 8, fontWeight: 700 }}>No articles found for "{query}"</p>
+              <p style={{ color: "var(--muted)", fontSize: 13 }}>Try a different search term or check the spelling</p>
+            </div>
+          )}
+
+          {!loading && articles.length > 0 && (
+            <div className="articles-grid">
+              {articles.map((a, i) => {
+                const url = `/article-detail?url=${encodeURIComponent(a.link)}&title=${encodeURIComponent(a.title)}`;
+                return (
+                  <article className="article-card" key={i}>
+                    <a href={url}>
+                      {a.image
+                        ? <img className="article-thumb" src={a.image} alt={a.title} loading="lazy" />
+                        : <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
+                      }
+                    </a>
+                    <div className="article-body">
+                      <div className="article-meta">
+                        <span className="badge">NEWS</span>
+                        {a.date && <time className="micro" dateTime={a.date}>{timeAgo(a.date)}</time>}
+                      </div>
+                      <h2 className="article-title"><a href={url}>{a.title}</a></h2>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
-      {!searched && query.length === 0 && (
-        <p style={{ color: "var(--muted)", fontSize: 14 }}>
-          Type a game name or topic and press Enter or Go.
-        </p>
+      {!searched && (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--muted)" }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>🔍</div>
+          <p style={{ fontSize: 14 }}>Type a game name or topic and press <strong>Search</strong></p>
+          <p style={{ fontSize: 13, marginTop: 6 }}>e.g. GTA, Mario, Fortnite, patch notes, review…</p>
+        </div>
       )}
     </div>
   );
