@@ -21,6 +21,7 @@ import {
   SettingsPage,
   CommentsSection,
   useFavorites,
+  useFollowedGames,
 } from "./Auth";
 import { supabase } from "./supabase";
 
@@ -1464,6 +1465,9 @@ function GameDetailPage() {
   const [game,    setGame]    = useState(null);
   const [articles,setArticles]= useState([]);
   const [loading, setLoading] = useState(true);
+  const { followedGames, toggleFollowGame, isFollowing } = useFollowedGames();
+  const { user } = useAuth();
+  const navigate = useNavigate();
 
   useEffect(() => {
     (async () => {
@@ -1475,15 +1479,13 @@ function GameDetailPage() {
           const found = (d.chart || []).find(g => g.name.toLowerCase() === gameName.toLowerCase());
           if (found) setGame(found);
         }
-        // Find related articles
-        const r2 = await fetch(`${API_BASE}?limit=20&offset=0`);
+        // Find related articles using the search endpoint
+        const searchBase = API_BASE.replace("/api/articles", "/api/articles/search");
+        const shortName = gameName.split(":")[0].trim();
+        const r2 = await fetch(`${searchBase}?q=${encodeURIComponent(shortName)}&limit=6`);
         if (r2.ok) {
           const { articles: arts } = await r2.json();
-          const lower = gameName.toLowerCase().split(":")[0].trim();
-          setArticles((arts || []).filter(a =>
-            a.title?.toLowerCase().includes(lower) ||
-            a.deck?.toLowerCase().includes(lower)
-          ).slice(0, 6));
+          setArticles(arts || []);
         }
       } catch {} finally { setLoading(false); }
     })();
@@ -1526,6 +1528,23 @@ function GameDetailPage() {
           {!game && (
             <p style={{ color: "var(--muted)", fontSize: 14 }}>This game isn't currently in the Hot 50.</p>
           )}
+          {/* Follow button */}
+          <button
+            onClick={() => {
+              if (!user) { navigate("/login"); return; }
+              toggleFollowGame({ name: gameName, coverUrl: game?.coverUrl || null });
+            }}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 8,
+              marginTop: 10, padding: "8px 18px", borderRadius: 10,
+              border: isFollowing(gameName) ? "1px solid var(--red)" : "1px solid var(--ring-md)",
+              background: isFollowing(gameName) ? "var(--red-glow)" : "transparent",
+              color: isFollowing(gameName) ? "var(--red)" : "var(--muted2)",
+              fontWeight: 700, fontSize: 13, cursor: "pointer", transition: ".15s",
+            }}
+          >
+            {isFollowing(gameName) ? "🔔 Following" : "🔔 Follow Game"}
+          </button>
         </div>
       </div>
 
