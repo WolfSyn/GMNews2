@@ -493,6 +493,47 @@ app.get("/api/charts/gmnscore", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+//  /api/games/search  —  Search IGDB for any game by name
+// ─────────────────────────────────────────────────────────────
+app.get("/api/games/search", async (req, res) => {
+  const q = (req.query.q || "").trim();
+  if (!q) return res.json([]);
+  const cacheKey = `game_search_${q.toLowerCase()}`;
+  const cached = getCache(cacheKey);
+  if (cached) return res.json(cached);
+  try {
+    const token = await getTwitchToken();
+    const r = await fetch("https://api.igdb.com/v4/games", {
+      method: "POST",
+      headers: twitchHeaders(token),
+      body: `
+        fields name, cover.url, platforms.name, first_release_date;
+        search "${q.replace(/"/g, "")}";
+        where version_parent = null;
+        limit 10;
+      `,
+    });
+    if (!r.ok) throw new Error(`IGDB ${r.status}`);
+    const games = await r.json();
+    const results = games.map(g => ({
+      name: g.name,
+      coverUrl: g.cover?.url
+        ? ("https:" + g.cover.url.replace("t_thumb", "t_cover_big")).replace("https:https:", "https:")
+        : null,
+      platforms: (g.platforms || []).map(p => p.name).slice(0, 3).join(", ") || null,
+      year: g.first_release_date
+        ? new Date(g.first_release_date * 1000).getFullYear()
+        : null,
+    }));
+    setCache(cacheKey, results, 10 * 60 * 1000);
+    res.json(results);
+  } catch (e) {
+    console.error("game search error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 //  GAMESPOT ENDPOINTS  (unchanged from your original)
 // ─────────────────────────────────────────────────────────────
 function pickImage(img) {
