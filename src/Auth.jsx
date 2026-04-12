@@ -110,6 +110,39 @@ export function useFavorites() {
 
 
 /* ─────────────────────────────────────────
+   FOLLOWED GAMES HOOK
+───────────────────────────────────────── */
+export function useFollowedGames() {
+  const { user } = useAuth();
+  const [followedGames, setFollowedGames] = useState([]);
+
+  useEffect(() => {
+    if (!user) { setFollowedGames([]); return; }
+    supabase.from("followed_games").select("*").eq("user_id", user.id)
+      .then(({ data }) => setFollowedGames(data || []));
+  }, [user]);
+
+  async function toggleFollowGame(game) {
+    if (!user) return;
+    const already = followedGames.some(f => f.game_name === game.name);
+    if (already) {
+      await supabase.from("followed_games").delete().eq("user_id", user.id).eq("game_name", game.name);
+      setFollowedGames(f => f.filter(x => x.game_name !== game.name));
+    } else {
+      const newFollow = { user_id: user.id, game_name: game.name, cover_url: game.coverUrl || null };
+      const { data } = await supabase.from("followed_games").insert(newFollow).select().single();
+      if (data) setFollowedGames(f => [...f, data]);
+    }
+  }
+
+  function isFollowing(gameName) {
+    return followedGames.some(f => f.game_name === gameName);
+  }
+
+  return { followedGames, toggleFollowGame, isFollowing };
+}
+
+/* ─────────────────────────────────────────
    NAV USER MENU  — shown in Header
 ───────────────────────────────────────── */
 export function NavUserMenu() {
@@ -594,9 +627,14 @@ export function UserProfilePage() {
   const [saveMsg,  setSaveMsg]  = useState("");
 
   const isOwn = myProfile?.username === username;
-  const [favs,         setFavs]         = useState([]);
-  const [avatarUrl,    setAvatarUrl]    = useState(null);
-  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [favs,              setFavs]              = useState([]);
+  const [followedGames,     setFollowedGames]     = useState([]);
+  const [avatarUrl,         setAvatarUrl]         = useState(null);
+  const [uploadingAvatar,   setUploadingAvatar]   = useState(false);
+  const [showGameSearch,    setShowGameSearch]    = useState(false);
+  const [gameSearchQuery,   setGameSearchQuery]   = useState("");
+  const [gameSearchResults, setGameSearchResults] = useState([]);
+  const [gameSearchLoading, setGameSearchLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -609,16 +647,59 @@ export function UserProfilePage() {
         setAvatarUrl(prof?.avatar_url || null);
 
         if (prof) {
-          const [{ data: revs }, { data: favData }] = await Promise.all([
+          const [{ data: revs }, { data: favData }, { data: followData }] = await Promise.all([
             supabase.from("reviews").select("*").eq("user_id", prof.id).order("created_at", { ascending: false }),
             supabase.from("favorites").select("*").eq("user_id", prof.id).order("created_at", { ascending: false }),
+            supabase.from("followed_games").select("*").eq("user_id", prof.id).order("created_at", { ascending: false }),
           ]);
           setReviews(revs || []);
           setFavs(favData || []);
+          setFollowedGames(followData || []);
         }
       } catch {} finally { setLoading(false); }
     })();
   }, [username]);
+
+  async function searchGames(q) {
+    if (!q.trim()) { setGameSearchResults([]); return; }
+    setGameSearchLoading(true);
+    try {
+      // Build base URL from env — works both locally and in production
+      let base = "http://localhost:3000";
+      if (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE) {
+        base = import.meta.env.VITE_API_BASE.replace("/api/articles", "").replace(/\/$/, "");
+      }
+      const url = `${base}/api/games/search?q=${encodeURIComponent(q)}`;
+      const r = await fetch(url);
+      if (r.ok) {
+        const data = await r.json();
+        setGameSearchResults(data);
+      } else {
+        setGameSearchResults([]);
+      }
+    } catch (e) {
+      console.error("Game search error:", e);
+      setGameSearchResults([]);
+    } finally { setGameSearchLoading(false); }
+  }
+
+  async function followGame(game) {
+    if (!user) return;
+    const already = followedGames.some(f => f.game_name === game.name);
+    if (already) return;
+    const { data } = await supabase.from("followed_games")
+      .insert({ user_id: user.id, game_name: game.name, cover_url: game.coverUrl || null })
+      .select().single();
+    if (data) setFollowedGames(f => [...f, data]);
+    setShowGameSearch(false);
+    setGameSearchQuery("");
+    setGameSearchResults([]);
+  }
+
+  async function unfollowGame(gameName) {
+    await supabase.from("followed_games").delete().eq("user_id", user.id).eq("game_name", gameName);
+    setFollowedGames(f => f.filter(x => x.game_name !== gameName));
+  }
 
   async function saveProfile() {
     setSaving(true);
@@ -882,6 +963,130 @@ export function UserProfilePage() {
             ))}
           </div>
         </>
+      )}
+
+      {/* Followed Games */}
+      {(isOwn || followedGames.length > 0) && (
+        <div style={{ marginTop: 32 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+            <h2 style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 20, fontWeight: 900, textTransform: "uppercase", margin: 0 }}>
+              🔔 Followed Games
+            </h2>
+            {isOwn && (
+              <button onClick={() => setShowGameSearch(s => !s)} style={{
+                padding: "6px 14px", borderRadius: 8,
+                background: showGameSearch ? "var(--panel2)" : "var(--red)",
+                border: "none", color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer",
+              }}>
+                {showGameSearch ? "Cancel" : "+ Follow a Game"}
+              </button>
+            )}
+          </div>
+
+          {isOwn && showGameSearch && (
+            <div style={{ marginBottom: 16, background: "var(--panel)", border: "1px solid var(--ring)", borderRadius: 12, padding: 16 }}>
+              <div style={{ position: "relative", marginBottom: 10 }}>
+                <input
+                  value={gameSearchQuery}
+                  onChange={e => { setGameSearchQuery(e.target.value); searchGames(e.target.value); }}
+                  placeholder="Search any game... e.g. Brawlhalla, Hollow Knight, Celeste"
+                  autoFocus
+                  style={{
+                    width: "100%", padding: "10px 14px",
+                    background: "var(--panel2)", border: "1px solid var(--ring-md)",
+                    borderRadius: 8, color: "var(--text)", fontSize: 14,
+                    fontFamily: "inherit", outline: "none",
+                  }}
+                  onFocus={e => e.target.style.borderColor = "var(--blue)"}
+                  onBlur={e => e.target.style.borderColor = "var(--ring-md)"}
+                />
+                {gameSearchLoading && (
+                  <div style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", color: "var(--muted)", fontSize: 12 }}>
+                    Searching...
+                  </div>
+                )}
+              </div>
+              {gameSearchResults.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto" }}>
+                  {gameSearchResults.map((g, i) => {
+                    const alreadyFollowing = followedGames.some(f => f.game_name === g.name);
+                    return (
+                      <div key={i} onClick={() => !alreadyFollowing && followGame(g)} style={{
+                        display: "flex", alignItems: "center", gap: 10,
+                        padding: "8px 10px", borderRadius: 8,
+                        background: "var(--panel2)", border: "1px solid var(--ring)",
+                        cursor: alreadyFollowing ? "default" : "pointer",
+                        opacity: alreadyFollowing ? 0.5 : 1,
+                      }}>
+                        <div style={{ width: 36, height: 36, borderRadius: 6, overflow: "hidden", background: "var(--panel)", flexShrink: 0 }}>
+                          {g.coverUrl
+                            ? <img src={g.coverUrl} alt={g.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                            : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🎮</div>
+                          }
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13 }}>{g.name}</div>
+                          {(g.platforms || g.year) && (
+                            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                              {[g.year, g.platforms].filter(Boolean).join(" · ")}
+                            </div>
+                          )}
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: alreadyFollowing ? "var(--green)" : "var(--red)" }}>
+                          {alreadyFollowing ? "Following" : "+ Follow"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {gameSearchQuery.length > 1 && !gameSearchLoading && gameSearchResults.length === 0 && (
+                <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>No games found for "{gameSearchQuery}"</p>
+              )}
+            </div>
+          )}
+
+          {followedGames.length === 0 ? (
+            <p style={{ color: "var(--muted)", fontSize: 14 }}>
+              {isOwn
+                ? "You are not following any games yet. Click + Follow a Game to get started!"
+                : `${profile.username} is not following any games yet.`}
+            </p>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 12 }}>
+              {followedGames.map(f => (
+                <div key={f.id} style={{ position: "relative" }}>
+                  <a href={`/game/${encodeURIComponent(f.game_name)}`}
+                    style={{ textDecoration: "none", color: "var(--text)", display: "block" }}>
+                    <div style={{ background: "var(--panel)", border: "1px solid var(--ring)", borderRadius: 12, overflow: "hidden", transition: "border-color .15s" }}
+                      onMouseEnter={e => e.currentTarget.style.borderColor = "var(--ring-md)"}
+                      onMouseLeave={e => e.currentTarget.style.borderColor = "var(--ring)"}
+                    >
+                      {f.cover_url
+                        ? <img src={f.cover_url} alt={f.game_name} style={{ width: "100%", aspectRatio: "3/4", objectFit: "cover", display: "block" }} />
+                        : <div style={{ width: "100%", aspectRatio: "3/4", background: "var(--panel2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>🎮</div>
+                      }
+                      <div style={{ padding: "8px 10px" }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, lineHeight: 1.3 }}>{f.game_name}</div>
+                        <div style={{ fontSize: 10, color: "var(--red)", fontWeight: 700, marginTop: 2 }}>🔔 Following</div>
+                      </div>
+                    </div>
+                  </a>
+                  {isOwn && (
+                    <button onClick={() => unfollowGame(f.game_name)} title="Unfollow" style={{
+                      position: "absolute", top: 6, right: 6,
+                      width: 22, height: 22, borderRadius: "50%",
+                      background: "rgba(0,0,0,0.7)", border: "none",
+                      color: "#fff", fontSize: 10, cursor: "pointer",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontWeight: 900, lineHeight: 1,
+                    }}>x</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1197,3 +1402,4 @@ export function CommentsSection({ articleUrl, articleTitle }) {
     </div>
   );
 }
+
