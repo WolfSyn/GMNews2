@@ -448,7 +448,7 @@ app.get("/api/charts/gmnscore", async (req, res) => {
     const token = await getTwitchToken();
 
     // Pick the GMN Score game by name — update monthly
-    const SCORE_GAME = "Crimson Desert";
+    const SCORE_GAME = "Death Stranding 2";
 
     const r = await fetch("https://api.igdb.com/v4/games", {
       method: "POST",
