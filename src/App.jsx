@@ -152,7 +152,7 @@ function Header() {
         <div className="nav-inner">
           <NavLink to="/" className="logo" onClick={() => setOpen(false)}>
             <img
-              src="/important_stuff_v2.png"
+              src="/important_stuff.png"
               alt="GMN News"
               className="logo-img"
               width="38"
@@ -1257,27 +1257,29 @@ function PrivacyPage() {
 
 
 /* ─────────────────────────────────────────
-   SEARCH PAGE
+   SEARCH PAGE  —  v2 (RSS + Top 200 Twitch + IGDB)
 ───────────────────────────────────────── */
 function SearchPage() {
   const API_BASE   = useApiBase();
   const API_ORIGIN = useApiOrigin();
-  const [query, setQuery]       = useState("");
-  const [inputVal, setInputVal] = useState("");
-  const [articles, setArticles] = useState([]);
-  const [games,    setGames]    = useState([]);
-  const [loading,  setLoading]  = useState(false);
-  const [searched, setSearched] = useState(false);
+
+  const [query,       setQuery]       = useState("");
+  const [inputVal,    setInputVal]    = useState("");
+  const [articles,    setArticles]    = useState([]);
+  const [twitchGames, setTwitchGames] = useState([]);
+  const [igdbGames,   setIgdbGames]   = useState([]);
+  const [loading,     setLoading]     = useState(false);
+  const [searched,    setSearched]    = useState(false);
   const inputRef = useRef(null);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  // Pre-load all 50 chart games for game search
+  // Pre-load top 200 Twitch games on mount for live filtering as user types
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(`${API_ORIGIN}/api/charts`);
-        if (r.ok) { const d = await r.json(); setGames(d.chart || []); }
+        const r = await fetch(`${API_ORIGIN}/api/games/top200`);
+        if (r.ok) setTwitchGames(await r.json());
       } catch {}
     })();
   }, [API_ORIGIN]);
@@ -1288,48 +1290,42 @@ function SearchPage() {
     setLoading(true);
     setSearched(true);
     setArticles([]);
+    setIgdbGames([]);
+
     try {
-      // Use the dedicated search endpoint that queries GameSpot directly by keyword
       const searchBase = API_BASE.replace("/api/articles", "/api/articles/search");
-      const r = await fetch(`${searchBase}?q=${encodeURIComponent(q)}&limit=20`);
-      if (r.ok) {
-        const { articles: arts } = await r.json();
+
+      // Run RSS article search + IGDB game search in parallel
+      const [articleRes, igdbRes] = await Promise.allSettled([
+        fetch(`${searchBase}?q=${encodeURIComponent(q)}&limit=50`),
+        fetch(`${API_ORIGIN}/api/games/search?q=${encodeURIComponent(q)}`),
+      ]);
+
+      if (articleRes.status === "fulfilled" && articleRes.value.ok) {
+        const { articles: arts } = await articleRes.value.json();
         setArticles(arts || []);
-      } else {
-        // Fallback: local filter across 3 pages if search endpoint fails
-        const [r1, r2, r3] = await Promise.all([
-          fetch(`${API_BASE}?limit=20&offset=0`),
-          fetch(`${API_BASE}?limit=20&offset=20`),
-          fetch(`${API_BASE}?limit=20&offset=40`),
-        ]);
-        const lower = q.toLowerCase();
-        let all = [];
-        for (const rx of [r1, r2, r3]) {
-          if (rx.ok) {
-            const { articles: arts } = await rx.json();
-            all = [...all, ...(arts || [])];
-          }
-        }
-        setArticles(all.filter(a =>
-          a.title?.toLowerCase().includes(lower) ||
-          a.deck?.toLowerCase().includes(lower)
-        ));
       }
-    } catch { setArticles([]); } finally { setLoading(false); }
+
+      if (igdbRes.status === "fulfilled" && igdbRes.value.ok) {
+        setIgdbGames(await igdbRes.value.json());
+      }
+
+    } catch { setArticles([]); }
+    finally  { setLoading(false); }
   }
 
-  // Live game filtering as user types
-  const gameResults = inputVal.length > 1
-    ? games.filter(g => g.name.toLowerCase().includes(inputVal.toLowerCase())).slice(0, 5)
+  // Live filter top 200 Twitch games as user types
+  const twitchResults = inputVal.length > 1
+    ? twitchGames.filter(g => g.name.toLowerCase().includes(inputVal.toLowerCase())).slice(0, 6)
     : [];
 
   return (
-    <div style={{ maxWidth: 860, margin: "0 auto", padding: "32px 20px 60px" }}>
+    <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 20px 60px" }}>
       <h1 style={{ fontFamily: "var(--font-display)", fontSize: 36, fontWeight: 900, textTransform: "uppercase", marginBottom: 6 }}>
         Search GMN
       </h1>
       <p style={{ color: "var(--muted)", fontSize: 14, marginBottom: 20 }}>
-        Search games on the Hot 50 or find articles from our news feed
+        Search top 200 trending games, any game ever made, or find articles from IGN, Polygon, Kotaku &amp; more
       </p>
 
       {/* Search input */}
@@ -1345,7 +1341,7 @@ function SearchPage() {
             background: "var(--panel)", border: "1px solid var(--ring-md)",
             borderRadius: 12, color: "var(--text)", fontSize: 16,
             fontFamily: "var(--font-body)", outline: "none",
-            transition: "border-color .15s",
+            transition: "border-color .15s", boxSizing: "border-box",
           }}
           onFocus={e => e.target.style.borderColor = "var(--blue)"}
           onBlur={e => e.target.style.borderColor = "var(--ring-md)"}
@@ -1361,24 +1357,24 @@ function SearchPage() {
         >Search</button>
       </div>
 
-      {/* Live game results as user types */}
-      {gameResults.length > 0 && (
+      {/* Live Twitch top 200 game suggestions as user types */}
+      {twitchResults.length > 0 && (
         <div style={{ marginBottom: 28 }}>
           <div style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)", letterSpacing: "0.8px", marginBottom: 10 }}>
-            GAMES ON GMN HOT 50
+            🎮 TRENDING GAMES (TOP 200)
           </div>
-          {gameResults.map(g => (
+          {twitchResults.map(g => (
             <a key={g.rank} href={`/game/${encodeURIComponent(g.name)}`}
               style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", marginBottom: 6, background: "var(--panel)", border: "1px solid var(--ring)", borderRadius: 10, textDecoration: "none", color: "var(--text)", transition: "border-color .15s" }}
               onMouseEnter={e => e.currentTarget.style.borderColor = "var(--ring-md)"}
               onMouseLeave={e => e.currentTarget.style.borderColor = "var(--ring)"}
             >
-              <div style={{ width: 38, height: 38, borderRadius: 8, overflow: "hidden", background: "var(--panel2)", flexShrink: 0, border: "1px solid var(--ring)" }}>
+              <div style={{ width: 38, height: 50, borderRadius: 6, overflow: "hidden", background: "var(--panel2)", flexShrink: 0, border: "1px solid var(--ring)" }}>
                 {g.coverUrl && <img src={g.coverUrl} alt={g.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{g.name}</div>
-                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>#{g.rank} on GMN Hot 50 · {g.viewersLabel} viewers</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>#{g.rank} Trending on Twitch</div>
               </div>
               <span style={{ fontSize: 11, color: "var(--muted)" }}>View →</span>
             </a>
@@ -1386,59 +1382,99 @@ function SearchPage() {
         </div>
       )}
 
-      {/* Article search results */}
+      {/* Search results */}
       {searched && (
         <div>
-          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)", letterSpacing: "0.8px", marginBottom: 14 }}>
-            {loading ? "SEARCHING ARTICLES…" : `NEWS ARTICLES (${articles.length} results for "${query}")`}
-          </div>
 
-          {loading && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
-              {[1,2,3,4,5,6].map(i => (
-                <div className="article-card" key={i}>
-                  <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
-                  <div className="article-body">
-                    <div className="skeleton-box" style={{ height: 12, width: "60%", borderRadius: 6, margin: "6px 0" }} />
-                    <div className="skeleton-box" style={{ height: 14, borderRadius: 6 }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {!loading && articles.length === 0 && (
-            <div style={{ textAlign: "center", padding: "40px 20px" }}>
-              <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
-              <p style={{ color: "var(--muted2)", marginBottom: 8, fontWeight: 700 }}>No articles found for "{query}"</p>
-              <p style={{ color: "var(--muted)", fontSize: 13 }}>Try a different search term or check the spelling</p>
-            </div>
-          )}
-
-          {!loading && articles.length > 0 && (
-            <div className="articles-grid">
-              {articles.map((a, i) => {
-                const url = `/article-detail?url=${encodeURIComponent(a.link)}&title=${encodeURIComponent(a.title)}`;
-                return (
-                  <article className="article-card" key={i}>
-                    <a href={url}>
-                      {a.image
-                        ? <img className="article-thumb" src={a.image} alt={a.title} loading="lazy" />
-                        : <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
+          {/* IGDB Game Results */}
+          {!loading && igdbGames.length > 0 && (
+            <div style={{ marginBottom: 32 }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)", letterSpacing: "0.8px", marginBottom: 12 }}>
+                🕹️ GAMES ({igdbGames.length} results for "{query}")
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 12 }}>
+                {igdbGames.map((g, i) => (
+                  <a key={i} href={`/game/${encodeURIComponent(g.name)}`}
+                    style={{ textDecoration: "none", color: "var(--text)", background: "var(--panel)", border: "1px solid var(--ring)", borderRadius: 10, overflow: "hidden", transition: "border-color .15s" }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = "var(--ring-md)"}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = "var(--ring)"}
+                  >
+                    <div style={{ aspectRatio: "3/4", background: "var(--panel2)", overflow: "hidden" }}>
+                      {g.coverUrl
+                        ? <img src={g.coverUrl} alt={g.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>🎮</div>
                       }
-                    </a>
-                    <div className="article-body">
-                      <div className="article-meta">
-                        <span className="badge">NEWS</span>
-                        {a.date && <time className="micro" dateTime={a.date}>{timeAgo(a.date)}</time>}
-                      </div>
-                      <h2 className="article-title"><a href={url}>{a.title}</a></h2>
                     </div>
-                  </article>
-                );
-              })}
+                    <div style={{ padding: "10px 12px" }}>
+                      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4, lineHeight: 1.3 }}>{g.name}</div>
+                      {g.year && <div style={{ fontSize: 11, color: "var(--muted)" }}>{g.year}</div>}
+                      {g.platforms && <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>{g.platforms}</div>}
+                    </div>
+                  </a>
+                ))}
+              </div>
             </div>
           )}
+
+          {/* Article Results */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)", letterSpacing: "0.8px", marginBottom: 14 }}>
+              {loading ? "SEARCHING ARTICLES…" : `📰 NEWS ARTICLES (${articles.length} results for "${query}")`}
+            </div>
+
+            {loading && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+                {[1,2,3,4,5,6].map(i => (
+                  <div className="article-card" key={i}>
+                    <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
+                    <div className="article-body">
+                      <div className="skeleton-box" style={{ height: 12, width: "60%", borderRadius: 6, margin: "6px 0" }} />
+                      <div className="skeleton-box" style={{ height: 14, borderRadius: 6 }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!loading && articles.length === 0 && igdbGames.length === 0 && (
+              <div style={{ textAlign: "center", padding: "40px 20px" }}>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
+                <p style={{ color: "var(--muted2)", marginBottom: 8, fontWeight: 700 }}>No results found for "{query}"</p>
+                <p style={{ color: "var(--muted)", fontSize: 13 }}>Try a different search term or check the spelling</p>
+              </div>
+            )}
+
+            {!loading && articles.length === 0 && igdbGames.length > 0 && (
+              <div style={{ textAlign: "center", padding: "20px", color: "var(--muted)", fontSize: 13 }}>
+                No current news articles found for "{query}" — check back later as our feeds update every 10 minutes.
+              </div>
+            )}
+
+            {!loading && articles.length > 0 && (
+              <div className="articles-grid">
+                {articles.map((a, i) => {
+                  const url = `/article-detail?url=${encodeURIComponent(a.link)}&title=${encodeURIComponent(a.title)}`;
+                  return (
+                    <article className="article-card" key={i}>
+                      <a href={url}>
+                        {a.image
+                          ? <img className="article-thumb" src={a.image} alt={a.title} loading="lazy" />
+                          : <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
+                        }
+                      </a>
+                      <div className="article-body">
+                        <div className="article-meta">
+                          <span className="badge">{a.source || "NEWS"}</span>
+                          {a.date && <time className="micro" dateTime={a.date}>{timeAgo(a.date)}</time>}
+                        </div>
+                        <h2 className="article-title"><a href={url}>{a.title}</a></h2>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
