@@ -1,10 +1,11 @@
-// server/index.mjs  —  GMN News API Server
+// server/index.mjs  —  GMN News API Server (v3 — RSS Edition)
 import express from "express";
 import cors    from "cors";
 import { configDotenv } from "dotenv";
 configDotenv();
 import sanitizeHtml from "sanitize-html";
 import { JSDOM }    from "jsdom";
+import { XMLParser } from "fast-xml-parser";
 
 if (typeof fetch === "undefined") {
   const { default: nodeFetch } = await import("node-fetch");
@@ -18,20 +19,115 @@ app.use(express.json());
 // ─────────────────────────────────────────────────────────────
 //  ENV
 // ─────────────────────────────────────────────────────────────
-const GS_API_KEY        = process.env.GAMESPOT_API_KEY;
-const YT_API_KEY        = process.env.YT_API_KEY;
-const YT_PLAYLIST_ID    = process.env.YT_PLAYLIST_ID || "PLgbyvoUvIMf9Jz3j-JvpOW4CuXKB21Bis";
-const TWITCH_CLIENT_ID  = process.env.TWITCH_CLIENT_ID;
+const YT_API_KEY          = process.env.YT_API_KEY;
+const YT_PLAYLIST_ID      = process.env.YT_PLAYLIST_ID || "PLgbyvoUvIMf9Jz3j-JvpOW4CuXKB21Bis";
+const TWITCH_CLIENT_ID    = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
-const STEAM_API_KEY     = process.env.STEAM_API_KEY;
-
-const GS_ARTICLES_BASE = "https://www.gamespot.com/api/articles/";
-const GS_REVIEWS_BASE  = "https://www.gamespot.com/api/reviews/";
-const GS_RELEASES_BASE = "https://www.gamespot.com/api/releases/";
+const STEAM_API_KEY       = process.env.STEAM_API_KEY;
 
 // ─────────────────────────────────────────────────────────────
-//  TWITCH OAuth token cache  (Client-Credentials flow)
-//  Token lasts ~60 days; we refresh automatically when expired
+//  RSS FEED SOURCES
+// ─────────────────────────────────────────────────────────────
+const RSS_FEEDS = [
+  {
+    name:     "IGN",
+    url:      "https://feeds.feedburner.com/ign/games-all",
+    fallback: "https://www.ign.com/rss/articles/games",
+    color:    "#ff3a00",
+  },
+  {
+    name:     "Polygon",
+    url:      "https://www.polygon.com/rss/index.xml",
+    color:    "#ef2d30",
+  },
+  {
+    name:     "Kotaku",
+    url:      "https://kotaku.com/rss",
+    color:    "#00a550",
+  },
+  {
+    name:     "Eurogamer",
+    url:      "https://www.eurogamer.net/?format=rss",
+    color:    "#f7cf00",
+  },
+  {
+    name:     "PC Gamer",
+    url:      "https://www.pcgamer.com/rss/",
+    color:    "#e2001a",
+  },
+];
+
+// ─────────────────────────────────────────────────────────────
+//  RSS PARSER
+// ─────────────────────────────────────────────────────────────
+const xmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+  parseTagValue: true,
+  trimValues: true,
+});
+
+function parseDate(raw) {
+  if (!raw) return null;
+  try { return new Date(raw).toISOString(); } catch { return null; }
+}
+
+function extractImage(item) {
+  // Try media:content, media:thumbnail, enclosure, then og image in content
+  if (item["media:content"]?.["@_url"]) return item["media:content"]["@_url"];
+  if (item["media:thumbnail"]?.["@_url"]) return item["media:thumbnail"]["@_url"];
+  if (item.enclosure?.["@_url"] && item.enclosure["@_url"].match(/\.(jpg|jpeg|png|webp)/i))
+    return item.enclosure["@_url"];
+  // Try to extract first img src from content
+  const html = item["content:encoded"] || item.description || "";
+  const match = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+  if (match) return match[1];
+  return null;
+}
+
+function extractDeck(item) {
+  const raw = item.description || item["content:encoded"] || "";
+  // Strip HTML tags and truncate
+  const text = raw.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, 200) + (text.length > 200 ? "…" : "") : null;
+}
+
+async function fetchRSSFeed(feed) {
+  const urls = [feed.url, feed.fallback].filter(Boolean);
+  for (const url of urls) {
+    try {
+      const r = await fetch(url, {
+        headers: { "User-Agent": "GMN-News/3.0 (+https://gmnnews.org)" },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) continue;
+      const xml  = await r.text();
+      const parsed = xmlParser.parse(xml);
+      const channel = parsed?.rss?.channel || parsed?.feed;
+      if (!channel) continue;
+
+      // Handle both RSS 2.0 and Atom formats
+      const items = channel.item || channel.entry || [];
+      const arr   = Array.isArray(items) ? items : [items];
+
+      return arr.slice(0, 20).map(item => ({
+        title:     item.title?.["#text"] || item.title || "Untitled",
+        link:      item.link?.["@_href"] || item.link?.["#text"] || item.link || null,
+        date:      parseDate(item.pubDate || item.published || item.updated),
+        deck:      extractDeck(item),
+        image:     extractImage(item),
+        source:    feed.name,
+        sourceColor: feed.color,
+      })).filter(a => a.link);
+    } catch (e) {
+      console.warn(`RSS fetch failed for ${feed.name} (${url}):`, e.message);
+    }
+  }
+  return []; // graceful empty on total failure
+}
+
+// ─────────────────────────────────────────────────────────────
+//  TWITCH OAuth token cache
 // ─────────────────────────────────────────────────────────────
 let twitchToken    = null;
 let twitchTokenExp = 0;
@@ -39,9 +135,8 @@ let twitchTokenExp = 0;
 async function getTwitchToken() {
   if (twitchToken && Date.now() < twitchTokenExp) return twitchToken;
 
-  if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) {
+  if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET)
     throw new Error("Missing TWITCH_CLIENT_ID or TWITCH_CLIENT_SECRET in .env");
-  }
 
   const r = await fetch("https://id.twitch.tv/oauth2/token", {
     method: "POST",
@@ -60,7 +155,7 @@ async function getTwitchToken() {
 
   const j = await r.json();
   twitchToken    = j.access_token;
-  twitchTokenExp = Date.now() + (j.expires_in - 300) * 1000; // refresh 5 min early
+  twitchTokenExp = Date.now() + (j.expires_in - 300) * 1000;
   console.log("✅ Twitch token refreshed");
   return twitchToken;
 }
@@ -74,7 +169,7 @@ function twitchHeaders(token) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  In-memory cache helper  (avoids hammering APIs on every req)
+//  In-memory cache helper
 // ─────────────────────────────────────────────────────────────
 const cache = new Map();
 
@@ -94,17 +189,168 @@ function getCache(key) {
 app.get("/ping", (_req, res) => res.json({ ok: true }));
 
 // ─────────────────────────────────────────────────────────────
-//  /api/charts  —  GMN Hot 50
-//
-//  Strategy:
-//    1. Fetch top 50 games by live viewer count from Twitch
-//    2. For each game, look up IGDB for cover art + metadata
-//    3. For games found on Steam, enrich with current player count
-//    4. Calculate a composite GMN Score from the data
-//    5. Cache result for 10 minutes to be kind to all three APIs
+//  /api/news  —  Latest gaming news from all RSS sources
+//  Merged, deduped, sorted by date
 // ─────────────────────────────────────────────────────────────
+app.get("/api/articles", async (req, res) => {
+  const source = req.query.source || "all"; // filter by source name
+  const limit  = Math.min(100, Number(req.query.limit)  || 20);
+  const offset = Number(req.query.offset) || 0;
 
-// Known Steam App IDs for popular games (we'll auto-detect others via IGDB)
+  const cacheKey = `articles_${source}`;
+  const cached   = getCache(cacheKey);
+
+  try {
+    let articles;
+    if (cached) {
+      articles = cached;
+    } else {
+      // Fetch all feeds in parallel
+      const feeds   = source === "all"
+        ? RSS_FEEDS
+        : RSS_FEEDS.filter(f => f.name.toLowerCase() === source.toLowerCase());
+
+      const results = await Promise.allSettled(feeds.map(fetchRSSFeed));
+      const all     = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
+
+      // Dedupe by link, sort newest first
+      const seen = new Set();
+      articles = all
+        .filter(a => { if (seen.has(a.link)) return false; seen.add(a.link); return true; })
+        .sort((a, b) => {
+          if (!a.date && !b.date) return 0;
+          if (!a.date) return 1;
+          if (!b.date) return -1;
+          return new Date(b.date) - new Date(a.date);
+        });
+
+      setCache(cacheKey, articles, 10 * 60 * 1000); // 10 min cache
+    }
+
+    const page   = articles.slice(offset, offset + limit);
+    res.json({
+      articles: page,
+      paging: {
+        limit,
+        offset,
+        total:   articles.length,
+        hasMore: offset + limit < articles.length,
+      },
+      sources: RSS_FEEDS.map(f => f.name),
+    });
+  } catch (e) {
+    console.error("news error:", e);
+    res.status(500).json({ error: "Failed to fetch news" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  /api/articles/sources  —  List available news sources
+// ─────────────────────────────────────────────────────────────
+app.get("/api/articles/sources", (_req, res) => {
+  res.json(RSS_FEEDS.map(f => ({ name: f.name, color: f.color })));
+});
+
+// ─────────────────────────────────────────────────────────────
+//  /api/articles/search  —  Search articles by keyword (client-side filter on cached data)
+// ─────────────────────────────────────────────────────────────
+app.get("/api/articles/search", async (req, res) => {
+  const q      = (req.query.q || "").trim().toLowerCase();
+  const limit  = Math.min(50, Number(req.query.limit) || 20);
+  const offset = Number(req.query.offset) || 0;
+
+  if (!q) return res.json({ articles: [], paging: { total: 0, hasMore: false } });
+
+  try {
+    // Use cached news or fetch fresh
+    let articles = getCache("articles_all");
+    if (!articles) {
+      const results = await Promise.allSettled(RSS_FEEDS.map(fetchRSSFeed));
+      const all     = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
+      const seen    = new Set();
+      articles = all
+        .filter(a => { if (seen.has(a.link)) return false; seen.add(a.link); return true; })
+        .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+      setCache("articles_all", articles, 10 * 60 * 1000);
+    }
+
+    const filtered = articles.filter(a =>
+      a.title?.toLowerCase().includes(q) ||
+      a.deck?.toLowerCase().includes(q) ||
+      a.source?.toLowerCase().includes(q)
+    );
+
+    res.json({
+      articles: filtered.slice(offset, offset + limit),
+      paging: { limit, offset, total: filtered.length, hasMore: offset + limit < filtered.length },
+    });
+  } catch (e) {
+    console.error("news search error:", e);
+    res.status(500).json({ error: "Search failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  /api/article  —  Full article reader (scrape any gaming URL)
+// ─────────────────────────────────────────────────────────────
+const ALLOWED_DOMAINS = [
+  "ign.com", "polygon.com", "kotaku.com",
+  "eurogamer.net", "pcgamer.com", "gamespot.com",
+  "gamesradar.com", "rockpapershotgun.com",
+];
+
+app.get("/api/article", async (req, res) => {
+  try {
+    const articleUrl = req.query.url;
+    if (!articleUrl) return res.status(400).json({ error: "Missing url param" });
+
+    const u = new URL(articleUrl);
+    const allowed = ALLOWED_DOMAINS.some(d => u.hostname.endsWith(d));
+    if (!allowed)
+      return res.status(400).json({ error: "Domain not allowed", allowed: ALLOWED_DOMAINS });
+
+    const htmlResp = await fetch(articleUrl, {
+      headers: { "User-Agent": "GMN-Reader/3.0 (+https://gmnnews.org)" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!htmlResp.ok) return res.status(502).json({ error: `Upstream ${htmlResp.status}` });
+
+    const html   = await htmlResp.text();
+    const dom    = new JSDOM(html, { url: articleUrl });
+    const { Readability } = await import("@mozilla/readability");
+    const parsed = new Readability(dom.window.document).parse();
+    if (!parsed) return res.status(500).json({ error: "Unable to parse article" });
+
+    const clean = sanitizeHtml(parsed.content, {
+      allowedTags: sanitizeHtml.defaults.allowedTags.concat(["img", "figure", "figcaption"]),
+      allowedAttributes: {
+        a:   ["href", "name", "target", "rel"],
+        img: ["src", "alt", "title"],
+        "*": ["id", "class"],
+      },
+      transformTags: {
+        a: (tag, attribs) => ({ tagName: "a", attribs: { ...attribs, target: "_blank", rel: "noopener" } }),
+      },
+    });
+
+    res.json({
+      title:     parsed.title,
+      byline:    parsed.byline   || null,
+      excerpt:   parsed.excerpt  || null,
+      siteName:  parsed.siteName || u.hostname,
+      leadImage: dom.window.document.querySelector('meta[property="og:image"]')?.content ||
+                 dom.window.document.querySelector('meta[name="twitter:image"]')?.content || null,
+      html: clean,
+    });
+  } catch (e) {
+    console.error("article reader error:", e);
+    res.status(500).json({ error: "Reader failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  /api/charts  —  GMN Hot 50
+// ─────────────────────────────────────────────────────────────
 const KNOWN_STEAM_IDS = {
   "Counter-Strike 2":          730,
   "Dota 2":                    570,
@@ -125,13 +371,13 @@ const KNOWN_STEAM_IDS = {
   "Baldur's Gate 3":           1086940,
   "Valheim":                   892970,
   "Terraria":                  105600,
-  "Minecraft":                 null,   // not on Steam
-  "Fortnite":                  null,   // Epic only
-  "League of Legends":         null,   // Riot only
-  "Valorant":                  null,   // Riot only
-  "World of Warcraft":         null,   // Battle.net
-  "Overwatch 2":               null,   // Battle.net
-  "Diablo IV":                 null,   // Battle.net
+  "Minecraft":                 null,
+  "Fortnite":                  null,
+  "League of Legends":         null,
+  "Valorant":                  null,
+  "World of Warcraft":         null,
+  "Overwatch 2":               null,
+  "Diablo IV":                 null,
   "Marvel Rivals":             2767030,
   "Hollow Knight: Silksong":   1030300,
   "Civilization VII":          1295660,
@@ -141,7 +387,10 @@ async function fetchSteamPlayers(appId) {
   if (!appId || !STEAM_API_KEY) return null;
   try {
     const url = `https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?appid=${appId}&key=${STEAM_API_KEY}`;
-    const r = await fetch(url, { headers: { "User-Agent": "GMN-News/1.0" } });
+    const r = await fetch(url, {
+      headers: { "User-Agent": "GMN-News/3.0" },
+      signal: AbortSignal.timeout(5000),
+    });
     if (!r.ok) return null;
     const j = await r.json();
     return j?.response?.player_count ?? null;
@@ -149,7 +398,6 @@ async function fetchSteamPlayers(appId) {
 }
 
 async function fetchIGDBCovers(gameNames, token) {
-  // IGDB query: find games by name, return cover art + metadata
   const namesList = gameNames.map(n => `"${n.replace(/"/g, "")}"`).join(",");
   const body = `
     fields name, cover.url, rating, first_release_date, platforms.name;
@@ -161,6 +409,7 @@ async function fetchIGDBCovers(gameNames, token) {
       method: "POST",
       headers: twitchHeaders(token),
       body,
+      signal: AbortSignal.timeout(8000),
     });
     if (!r.ok) return [];
     return await r.json();
@@ -181,72 +430,56 @@ app.get("/api/charts", async (req, res) => {
   try {
     const token = await getTwitchToken();
 
-    // ── Step 1: Top games on Twitch by viewer count ──
     const twitchRes = await fetch(
       "https://api.twitch.tv/helix/games/top?first=50",
-      { headers: twitchHeaders(token) }
+      { headers: twitchHeaders(token), signal: AbortSignal.timeout(8000) }
     );
     if (!twitchRes.ok) throw new Error(`Twitch top games ${twitchRes.status}`);
-    const twitchData = await twitchRes.json();
+    const twitchData  = await twitchRes.json();
     const twitchGames = twitchData.data || [];
 
-    // ── Step 2: Get viewer counts per game (via streams endpoint) ──
-    // Fetch stream data in batches to get viewer totals per game
     const gameIds = twitchGames.map(g => `game_id=${g.id}`).join("&");
     const streamsRes = await fetch(
       `https://api.twitch.tv/helix/streams?${gameIds}&first=100`,
-      { headers: twitchHeaders(token) }
+      { headers: twitchHeaders(token), signal: AbortSignal.timeout(8000) }
     );
     const streamsData = streamsRes.ok ? await streamsRes.json() : { data: [] };
 
-    // Sum viewer counts per game_id
     const viewersByGameId = {};
     for (const stream of (streamsData.data || [])) {
       viewersByGameId[stream.game_id] = (viewersByGameId[stream.game_id] || 0) + stream.viewer_count;
     }
 
-    // ── Step 3: IGDB cover art for all games ──
     const gameNames = twitchGames.map(g => g.name);
     const igdbGames = await fetchIGDBCovers(gameNames, token);
 
-    // Build lookup: name → IGDB data
     const igdbByName = {};
-    for (const g of igdbGames) {
-      igdbByName[g.name?.toLowerCase()] = g;
-    }
+    for (const g of igdbGames) igdbByName[g.name?.toLowerCase()] = g;
 
-    // ── Step 4: Build chart rows ──
-    const chartRows = [];
-    let prevRanks = getCache("charts_prev_ranks") || {};
+    const chartRows  = [];
+    let   prevRanks  = getCache("charts_prev_ranks") || {};
 
     for (let i = 0; i < twitchGames.length; i++) {
       const tw   = twitchGames[i];
       const rank = i + 1;
       const name = tw.name;
 
-      // Viewer count (from streams batch or Twitch game object)
-      const viewers = viewersByGameId[tw.id] || 0;
-
-      // IGDB data
-      const igdb      = igdbByName[name.toLowerCase()] || null;
-      const coverUrl  = igdb?.cover?.url
+      const viewers    = viewersByGameId[tw.id] || 0;
+      const igdb       = igdbByName[name.toLowerCase()] || null;
+      const coverUrl   = igdb?.cover?.url
         ? igdb.cover.url.replace("t_thumb", "t_cover_big").replace("http://", "https://")
         : null;
       const igdbRating = igdb?.rating ? Math.round(igdb.rating) : null;
+      const steamId    = KNOWN_STEAM_IDS[name] ?? null;
+      const steamCount = steamId ? await fetchSteamPlayers(steamId) : null;
 
-      // Steam player count
-      const steamId     = KNOWN_STEAM_IDS[name] ?? null;
-      const steamCount  = steamId ? await fetchSteamPlayers(steamId) : null;
-
-      // Trend vs last snapshot
       const prevRank = prevRanks[name];
       let trend, trendLabel;
-      if (!prevRank)              { trend = "new";  trendLabel = "NEW"; }
-      else if (rank < prevRank)   { trend = "up";   trendLabel = `▲ ${prevRank - rank}`; }
-      else if (rank > prevRank)   { trend = "down"; trendLabel = `▼ ${rank - prevRank}`; }
-      else                        { trend = "same"; trendLabel = "—"; }
+      if (!prevRank)            { trend = "new";  trendLabel = "NEW"; }
+      else if (rank < prevRank) { trend = "up";   trendLabel = `▲ ${prevRank - rank}`; }
+      else if (rank > prevRank) { trend = "down"; trendLabel = `▼ ${rank - prevRank}`; }
+      else                      { trend = "same"; trendLabel = "—"; }
 
-      // Twitch thumbnail (box art)
       const twitchThumb = tw.box_art_url
         ? tw.box_art_url.replace("{width}", "120").replace("{height}", "160")
         : null;
@@ -254,8 +487,8 @@ app.get("/api/charts", async (req, res) => {
       chartRows.push({
         rank,
         name,
-        twitchId:    tw.id,
-        coverUrl:    coverUrl || twitchThumb,
+        twitchId:     tw.id,
+        coverUrl:     coverUrl || twitchThumb,
         viewers,
         viewersLabel: formatPlayerCount(viewers),
         steamPlayers: steamCount,
@@ -263,19 +496,16 @@ app.get("/api/charts", async (req, res) => {
         igdbRating,
         trend,
         trendLabel,
-        // bar width = percentage of #1's viewers (capped 100)
         barPct: twitchGames[0] && viewers
           ? Math.round((viewers / (viewersByGameId[twitchGames[0].id] || viewers || 1)) * 100)
           : 0,
       });
     }
 
-    // Save ranks for next poll (trend calculation)
     const newRanks = {};
     for (const row of chartRows) newRanks[row.name] = row.rank;
-    setCache("charts_prev_ranks", newRanks, 24 * 60 * 60 * 1000); // keep 24h
+    setCache("charts_prev_ranks", newRanks, 24 * 60 * 60 * 1000);
 
-    // ── Step 5: Rising games  (biggest rank improvements) ──
     const rising = chartRows
       .filter(r => r.trend === "up" || r.trend === "new")
       .sort((a, b) => {
@@ -285,19 +515,14 @@ app.get("/api/charts", async (req, res) => {
       })
       .slice(0, 5)
       .map(r => ({
-        name: r.name,
+        name:     r.name,
         coverUrl: r.coverUrl,
-        gain: (prevRanks[r.name] || 51) - r.rank,
-        label: r.trend === "new" ? "NEW" : `+${(prevRanks[r.name] || 51) - r.rank}`,
+        gain:     (prevRanks[r.name] || 51) - r.rank,
+        label:    r.trend === "new" ? "NEW" : `+${(prevRanks[r.name] || 51) - r.rank}`,
       }));
 
-    const result = {
-      updatedAt: new Date().toISOString(),
-      chart: chartRows,
-      rising,
-    };
-
-    setCache("charts", result, 10 * 60 * 1000); // cache 10 min
+    const result = { updatedAt: new Date().toISOString(), chart: chartRows, rising };
+    setCache("charts", result, 10 * 60 * 1000);
     res.json(result);
 
   } catch (e) {
@@ -307,8 +532,7 @@ app.get("/api/charts", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-//  /api/charts/streams  —  Most Streamed right now (Twitch)
-//  Returns top 20 games by total live viewers
+//  /api/charts/streams
 // ─────────────────────────────────────────────────────────────
 app.get("/api/charts/streams", async (req, res) => {
   const cached = getCache("streams");
@@ -317,10 +541,10 @@ app.get("/api/charts/streams", async (req, res) => {
     const token = await getTwitchToken();
     const r = await fetch("https://api.twitch.tv/helix/games/top?first=20", {
       headers: twitchHeaders(token),
+      signal: AbortSignal.timeout(8000),
     });
     if (!r.ok) throw new Error(`Twitch ${r.status}`);
     const { data } = await r.json();
-
     const result = (data || []).map((g, i) => ({
       rank:     i + 1,
       name:     g.name,
@@ -328,8 +552,7 @@ app.get("/api/charts/streams", async (req, res) => {
         ? g.box_art_url.replace("{width}", "80").replace("{height}", "107")
         : null,
     }));
-
-    setCache("streams", result, 5 * 60 * 1000); // 5 min
+    setCache("streams", result, 5 * 60 * 1000);
     res.json(result);
   } catch (e) {
     console.error("streams error:", e);
@@ -338,14 +561,13 @@ app.get("/api/charts/streams", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-//  /api/charts/releases  —  Recent game releases (IGDB)
+//  /api/charts/releases
 // ─────────────────────────────────────────────────────────────
 app.get("/api/charts/releases", async (req, res) => {
   const cached = getCache("releases_chart");
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
-
     const RECENT = [
       "Monster Hunter Wilds",
       "Assassin's Creed Shadows",
@@ -358,16 +580,15 @@ app.get("/api/charts/releases", async (req, res) => {
       "Lies of P",
       "Baldur's Gate 3",
     ];
-
     const namesList = RECENT.map(n => `"${n}"`).join(",");
     const r = await fetch("https://api.igdb.com/v4/games", {
       method: "POST",
       headers: twitchHeaders(token),
       body: `fields name, cover.url, first_release_date; where name = (${namesList}); limit 10;`,
+      signal: AbortSignal.timeout(8000),
     });
     if (!r.ok) throw new Error(`IGDB ${r.status}`);
-    const games = await r.json();
-
+    const games  = await r.json();
     const result = RECENT.map((name, i) => {
       const igdb = games.find(g => g.name.toLowerCase() === name.toLowerCase());
       return {
@@ -381,7 +602,6 @@ app.get("/api/charts/releases", async (req, res) => {
           : "2025",
       };
     });
-
     setCache("releases_chart", result, 60 * 60 * 1000);
     res.json(result);
   } catch (e) {
@@ -391,45 +611,36 @@ app.get("/api/charts/releases", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-//  /api/charts/freetoplay  —  Top F2P games (IGDB)
+//  /api/charts/freetoplay
 // ─────────────────────────────────────────────────────────────
 app.get("/api/charts/freetoplay", async (req, res) => {
   const cached = getCache("ftp_chart");
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
-    const body = `
-      fields name, cover.url, rating, platforms.name;
-      where game_modes.name = "Massively Multiplayer Online"
-        | game_modes.name = "Multiplayer";
-      sort rating desc;
-      limit 10;
-    `;
-    // Use Twitch top games and filter for known F2P titles as IGDB
-    // doesn't have a "free" price field we can reliably filter on
     const KNOWN_F2P = [
       "Fortnite", "Apex Legends", "Valorant", "League of Legends",
       "Warframe", "Destiny 2", "Path of Exile 2", "Genshin Impact",
       "Marvel Rivals", "Counter-Strike 2",
     ];
-
     const namesList = KNOWN_F2P.map(n => `"${n}"`).join(",");
     const r = await fetch("https://api.igdb.com/v4/games", {
       method: "POST",
       headers: twitchHeaders(token),
       body: `fields name, cover.url, rating; where name = (${namesList}); limit 10;`,
+      signal: AbortSignal.timeout(8000),
     });
     if (!r.ok) throw new Error(`IGDB ${r.status}`);
-    const games = await r.json();
-
-    // Sort by rating desc, keep known order as fallback
-    const sorted = KNOWN_F2P
-      .map(name => {
-        const igdb = games.find(g => g.name.toLowerCase() === name.toLowerCase());
-        return { name, coverUrl: igdb?.cover?.url?.replace("t_thumb","t_cover_big").replace("http://","https://") || null };
-      });
-
-    setCache("ftp_chart", sorted, 60 * 60 * 1000); // 1 hour
+    const games  = await r.json();
+    const sorted = KNOWN_F2P.map(name => {
+      const igdb = games.find(g => g.name.toLowerCase() === name.toLowerCase());
+      return {
+        name,
+        coverUrl: igdb?.cover?.url
+          ?.replace("t_thumb", "t_cover_big").replace("http://", "https://") || null,
+      };
+    });
+    setCache("ftp_chart", sorted, 60 * 60 * 1000);
     res.json(sorted.map((g, i) => ({ rank: i + 1, ...g })));
   } catch (e) {
     console.error("f2p chart error:", e);
@@ -438,44 +649,36 @@ app.get("/api/charts/freetoplay", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-//  /api/charts/gmnscore  —  GMN Score of the Month
-//  Picks the highest-rated recent game from IGDB
+//  /api/charts/gmnscore
 // ─────────────────────────────────────────────────────────────
 app.get("/api/charts/gmnscore", async (req, res) => {
   const cached = getCache("gmnscore");
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
-
-    // Pick the GMN Score game by name — update monthly
     const SCORE_GAME = "Pragmata";
-
     const r = await fetch("https://api.igdb.com/v4/games", {
       method: "POST",
       headers: twitchHeaders(token),
       body: `fields name, cover.url, rating, aggregated_rating, platforms.name, involved_companies.company.name, summary; where name = "${SCORE_GAME}"; limit 1;`,
+      signal: AbortSignal.timeout(8000),
     });
     if (!r.ok) throw new Error(`IGDB ${r.status}`);
     const games = await r.json();
-    const game = games[0];
+    const game  = games[0];
     if (!game) throw new Error("No game found");
 
-    const agg = game.aggregated_rating || 85;
-    const usr = game.rating || agg;
+    const agg      = game.aggregated_rating || 85;
+    const usr      = game.rating || agg;
     const gmnScore = Math.round((agg + usr) / 2);
-
-    const developer = game.involved_companies?.[0]?.company?.name || "Capcom";
+    const developer = game.involved_companies?.[0]?.company?.name || "Unknown";
     const platforms = (game.platforms || []).map(p => p.name).slice(0, 3).join(", ") || "PS5, Xbox, PC";
     const coverUrl  = game.cover?.url
       ? game.cover.url.replace("t_thumb", "t_cover_big").replace("http://", "https://")
       : null;
 
     const result = {
-      name: game.name,
-      coverUrl,
-      developer,
-      platforms,
-      gmnScore,
+      name: game.name, coverUrl, developer, platforms, gmnScore,
       summary: game.summary?.slice(0, 160) || "",
       breakdown: [
         { label: "Critics", val: Math.round(agg), color: "var(--gold)"  },
@@ -483,7 +686,6 @@ app.get("/api/charts/gmnscore", async (req, res) => {
         { label: "GMN",     val: gmnScore,         color: "var(--green)" },
       ],
     };
-
     setCache("gmnscore", result, 60 * 60 * 1000);
     res.json(result);
   } catch (e) {
@@ -493,13 +695,13 @@ app.get("/api/charts/gmnscore", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-//  /api/games/search  —  Search IGDB for any game by name
+//  /api/games/search
 // ─────────────────────────────────────────────────────────────
 app.get("/api/games/search", async (req, res) => {
   const q = (req.query.q || "").trim();
   if (!q) return res.json([]);
   const cacheKey = `game_search_${q.toLowerCase()}`;
-  const cached = getCache(cacheKey);
+  const cached   = getCache(cacheKey);
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
@@ -512,16 +714,17 @@ app.get("/api/games/search", async (req, res) => {
         where version_parent = null;
         limit 10;
       `,
+      signal: AbortSignal.timeout(8000),
     });
     if (!r.ok) throw new Error(`IGDB ${r.status}`);
-    const games = await r.json();
+    const games   = await r.json();
     const results = games.map(g => ({
-      name: g.name,
-      coverUrl: g.cover?.url
+      name:      g.name,
+      coverUrl:  g.cover?.url
         ? ("https:" + g.cover.url.replace("t_thumb", "t_cover_big")).replace("https:https:", "https:")
         : null,
       platforms: (g.platforms || []).map(p => p.name).slice(0, 3).join(", ") || null,
-      year: g.first_release_date
+      year:      g.first_release_date
         ? new Date(g.first_release_date * 1000).getFullYear()
         : null,
     }));
@@ -534,164 +737,8 @@ app.get("/api/games/search", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-//  GAMESPOT ENDPOINTS  (unchanged from your original)
+//  /api/videos  —  YouTube playlist
 // ─────────────────────────────────────────────────────────────
-function pickImage(img) {
-  if (!img) return null;
-  return img.original || img.super_url || img.medium_url || img.small_url ||
-         img.square_medium || img.square_small || img.thumb_url || img.tiny_url || null;
-}
-
-app.get("/api/articles", async (req, res) => {
-  try {
-    const limit  = req.query.limit  ? Number(req.query.limit)  : 20;
-    const offset = req.query.offset ? Number(req.query.offset) : 0;
-    const url = new URL(GS_ARTICLES_BASE);
-    url.searchParams.append("api_key", GS_API_KEY);
-    url.searchParams.append("format",  "json");
-    url.searchParams.append("sort",    "publish_date:desc");
-    url.searchParams.append("limit",   String(limit));
-    url.searchParams.append("offset",  String(offset));
-    const r = await fetch(url.toString(), { headers: { "User-Agent": "GMN-News/1.0 (+server)" } });
-    if (!r.ok) return res.status(502).json({ error: `Upstream ${r.status}` });
-    const j = await r.json();
-    const articles = (j.results || []).map(a => ({
-      title: a.title,
-      link:  a.site_detail_url,
-      date:  a.publish_date?.slice(0, 10),
-      deck:  a.deck,
-      image: pickImage(a.image),
-    }));
-    res.json({ articles, paging: { limit, offset, count: articles.length, hasMore: articles.length === limit } });
-  } catch (e) { res.status(500).json({ error: "Failed to fetch" }); }
-});
-
-// ─────────────────────────────────────────────────────────────
-//  /api/articles/search  —  Search GameSpot articles by keyword
-// ─────────────────────────────────────────────────────────────
-app.get("/api/articles/search", async (req, res) => {
-  try {
-    const q      = req.query.q || "";
-    const limit  = req.query.limit  ? Number(req.query.limit)  : 20;
-    const offset = req.query.offset ? Number(req.query.offset) : 0;
-    if (!q.trim()) return res.json({ articles: [], paging: { count: 0, hasMore: false } });
-
-    const url = new URL(GS_ARTICLES_BASE);
-    url.searchParams.append("api_key", GS_API_KEY);
-    url.searchParams.append("format",  "json");
-    url.searchParams.append("sort",    "publish_date:desc");
-    url.searchParams.append("limit",   String(limit));
-    url.searchParams.append("offset",  String(offset));
-    // GameSpot filter param: search by title
-    url.searchParams.append("filter",  `title:${q}`);
-
-    const r = await fetch(url.toString(), { headers: { "User-Agent": "GMN-News/1.0 (+server)" } });
-    if (!r.ok) return res.status(502).json({ error: `Upstream ${r.status}` });
-    const j = await r.json();
-    const articles = (j.results || []).map(a => ({
-      title: a.title,
-      link:  a.site_detail_url,
-      date:  a.publish_date?.slice(0, 10),
-      deck:  a.deck,
-      image: pickImage(a.image),
-    }));
-    res.json({ articles, paging: { limit, offset, count: articles.length, hasMore: articles.length === limit } });
-  } catch (e) { res.status(500).json({ error: "Search failed" }); }
-});
-
-app.get("/api/reviews", async (req, res) => {
-  try {
-    const limit  = req.query.limit  ? Number(req.query.limit)  : 20;
-    const offset = req.query.offset ? Number(req.query.offset) : 0;
-    const url = new URL(GS_REVIEWS_BASE);
-    url.searchParams.append("api_key",    GS_API_KEY);
-    url.searchParams.append("format",     "json");
-    url.searchParams.append("sort",       "publish_date:desc");
-    url.searchParams.append("limit",      String(limit));
-    url.searchParams.append("offset",     String(offset));
-    url.searchParams.append("field_list", "title,deck,publish_date,image,site_detail_url,score,authors");
-    const r = await fetch(url.toString(), { headers: { "User-Agent": "GMN-News/1.0 (+server)" } });
-    if (!r.ok) return res.status(502).json({ error: `Upstream ${r.status}` });
-    const j = await r.json();
-    const articles = (j.results || []).map(rv => ({
-      title:  rv.title,
-      link:   rv.site_detail_url,
-      date:   rv.publish_date?.slice(0, 10),
-      deck:   rv.deck,
-      image:  pickImage(rv.image),
-      score:  rv.score ?? null,
-      byline: Array.isArray(rv.authors)
-        ? rv.authors.map(a => a?.name).filter(Boolean).join(", ") || null
-        : rv.authors || null,
-    }));
-    res.json({ articles, paging: { limit, offset, count: articles.length, hasMore: articles.length === limit } });
-  } catch (e) { res.status(500).json({ error: "Failed to fetch reviews" }); }
-});
-
-app.get("/api/releases", async (req, res) => {
-  try {
-    const limit  = req.query.limit  ? Number(req.query.limit)  : 20;
-    const offset = req.query.offset ? Number(req.query.offset) : 0;
-    const url = new URL(GS_RELEASES_BASE);
-    url.searchParams.append("api_key",    GS_API_KEY);
-    url.searchParams.append("format",     "json");
-    url.searchParams.append("sort",       "release_date:desc");
-    url.searchParams.append("limit",      String(limit));
-    url.searchParams.append("offset",     String(offset));
-    url.searchParams.append("field_list", "name,title,release_date,image,site_detail_url,platforms");
-    const r = await fetch(url.toString(), { headers: { "User-Agent": "GMN-News/1.0 (+server)" } });
-    if (!r.ok) return res.status(502).json({ error: `Upstream ${r.status}` });
-    const j = await r.json();
-    const releases = (j.results || []).map(it => ({
-      title:    it.name || it.title || "Untitled",
-      link:     it.site_detail_url,
-      date:     it.release_date?.slice(0, 10) || it.publish_date?.slice(0, 10) || null,
-      deck:     (() => {
-        const p = [].concat(it.platforms || it.platform || [])
-          .map(p => typeof p === "string" ? p : p?.name).filter(Boolean).join(", ");
-        return p ? `Platforms: ${p}` : null;
-      })(),
-      image:    pickImage(it.image) || null,
-    }));
-    res.json({ articles: releases, paging: { limit, offset, count: releases.length, hasMore: releases.length === limit } });
-  } catch (e) { res.status(500).json({ error: "Failed to fetch releases" }); }
-});
-
-app.get("/api/article", async (req, res) => {
-  try {
-    const articleUrl = req.query.url;
-    if (!articleUrl) return res.status(400).json({ error: "Missing url param" });
-    const u = new URL(articleUrl);
-    if (!u.hostname.endsWith("gamespot.com"))
-      return res.status(400).json({ error: "Only GameSpot URLs are allowed" });
-    const htmlResp = await fetch(articleUrl, { headers: { "User-Agent": "GMN-Reader/1.0 (+server)" } });
-    if (!htmlResp.ok) return res.status(502).json({ error: `Upstream ${htmlResp.status}` });
-    const html = await htmlResp.text();
-    const dom  = new JSDOM(html, { url: articleUrl });
-    const { Readability } = await import("@mozilla/readability");
-    const parsed = new Readability(dom.window.document).parse();
-    if (!parsed) return res.status(500).json({ error: "Unable to parse article" });
-    const clean = sanitizeHtml(parsed.content, {
-      allowedTags: sanitizeHtml.defaults.allowedTags.concat(["img", "figure", "figcaption"]),
-      allowedAttributes: {
-        a:   ["href", "name", "target", "rel"],
-        img: ["src", "alt", "title"],
-        "*": ["id", "class", "style"],
-      },
-      transformTags: { a: (tag, attribs) => ({ tagName: "a", attribs: { ...attribs, target: "_blank", rel: "noopener" } }) },
-    });
-    res.json({
-      title:    parsed.title,
-      byline:   parsed.byline || null,
-      excerpt:  parsed.excerpt || null,
-      siteName: parsed.siteName || "GameSpot",
-      leadImage: dom.window.document.querySelector('meta[property="og:image"]')?.content ||
-                 dom.window.document.querySelector('meta[name="twitter:image"]')?.content || null,
-      html: clean,
-    });
-  } catch (e) { res.status(500).json({ error: "Reader failed" }); }
-});
-
 app.get("/api/videos", async (req, res) => {
   try {
     if (!YT_API_KEY) return res.status(500).json({ error: "Missing YT_API_KEY" });
@@ -704,21 +751,25 @@ app.get("/api/videos", async (req, res) => {
     url.searchParams.set("maxResults", String(limit));
     if (pageToken) url.searchParams.set("pageToken", pageToken);
     url.searchParams.set("key", YT_API_KEY);
-    const r = await fetch(url.toString(), { headers: { "User-Agent": "GMN-News/1.0 (+server)" } });
+
+    const r = await fetch(url.toString(), {
+      headers: { "User-Agent": "GMN-News/3.0 (+https://gmnnews.org)" },
+      signal: AbortSignal.timeout(8000),
+    });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
       return res.status(r.status).json({ error: "YouTube error", details: d });
     }
-    const j = await r.json();
+    const j     = await r.json();
     const items = (j.items || []).map(it => {
-      const s  = it.snippet || {};
+      const s  = it.snippet        || {};
       const cd = it.contentDetails || {};
       const id = cd.videoId || s.resourceId?.videoId || null;
       const t  = s.thumbnails || {};
       return {
         id,
-        title:        s.title || "Untitled",
-        description:  s.description || "",
+        title:        s.title        || "Untitled",
+        description:  s.description  || "",
         publishedAt:  cd.videoPublishedAt || s.publishedAt || null,
         channelTitle: s.channelTitle || "",
         thumb:        t.maxres?.url || t.standard?.url || t.high?.url || t.medium?.url || t.default?.url || null,
@@ -729,16 +780,22 @@ app.get("/api/videos", async (req, res) => {
       items,
       paging: { limit, nextPageToken: j.nextPageToken || null, prevPageToken: j.prevPageToken || null },
     });
-  } catch (e) { res.status(500).json({ error: "Failed to fetch videos" }); }
+  } catch (e) {
+    console.error("videos error:", e);
+    res.status(500).json({ error: "Failed to fetch videos" });
+  }
 });
 
-app.get("/", (_req, res) => res.type("text").send("GMN API OK"));
+// ─────────────────────────────────────────────────────────────
+//  ROOT
+// ─────────────────────────────────────────────────────────────
+app.get("/", (_req, res) => res.type("text").send("GMN News API v3 — RSS Edition ✅"));
 
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`\n🎮 GMN News API → http://localhost:${PORT}`);
-  console.log(`   Twitch:  ${TWITCH_CLIENT_ID  ? "✅ key found" : "❌ MISSING"}`);
-  console.log(`   Steam:   ${STEAM_API_KEY     ? "✅ key found" : "❌ MISSING"}`);
-  console.log(`   YouTube: ${YT_API_KEY        ? "✅ key found" : "❌ MISSING"}`);
-  console.log(`   GameSpot:${GS_API_KEY        ? "✅ key found" : "❌ MISSING"}\n`);
+  console.log(`\n🎮 GMN News API v3 → http://localhost:${PORT}`);
+  console.log(`   Twitch:  ${TWITCH_CLIENT_ID   ? "✅ key found" : "❌ MISSING"}`);
+  console.log(`   Steam:   ${STEAM_API_KEY      ? "✅ key found" : "❌ MISSING"}`);
+  console.log(`   YouTube: ${YT_API_KEY         ? "✅ key found" : "❌ MISSING"}`);
+  console.log(`   News:    ✅ RSS feeds (IGN, Polygon, Kotaku, Eurogamer, PC Gamer)\n`);
 });
