@@ -256,23 +256,19 @@ app.get("/api/articles/sources", (_req, res) => {
 // ─────────────────────────────────────────────────────────────
 app.get("/api/articles/search", async (req, res) => {
   const q      = (req.query.q || "").trim().toLowerCase();
-  const limit  = Math.min(50, Number(req.query.limit) || 20);
+  const limit  = Math.min(100, Number(req.query.limit) || 20);
   const offset = Number(req.query.offset) || 0;
 
   if (!q) return res.json({ articles: [], paging: { total: 0, hasMore: false } });
 
   try {
-    // Use cached news or fetch fresh
-    let articles = getCache("articles_all");
-    if (!articles) {
-      const results = await Promise.allSettled(RSS_FEEDS.map(fetchRSSFeed));
-      const all     = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
-      const seen    = new Set();
-      articles = all
-        .filter(a => { if (seen.has(a.link)) return false; seen.add(a.link); return true; })
-        .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-      setCache("articles_all", articles, 10 * 60 * 1000);
-    }
+    // Always fetch fresh from all RSS feeds for search (up to 100 articles)
+    const results = await Promise.allSettled(RSS_FEEDS.map(fetchRSSFeed));
+    const all     = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
+    const seen    = new Set();
+    const articles = all
+      .filter(a => { if (seen.has(a.link)) return false; seen.add(a.link); return true; })
+      .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 
     const filtered = articles.filter(a =>
       a.title?.toLowerCase().includes(q) ||
@@ -287,6 +283,50 @@ app.get("/api/articles/search", async (req, res) => {
   } catch (e) {
     console.error("news search error:", e);
     res.status(500).json({ error: "Search failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  /api/games/top200  —  Top 200 Twitch games for search
+// ─────────────────────────────────────────────────────────────
+app.get("/api/games/top200", async (req, res) => {
+  const cached = getCache("games_top200");
+  if (cached) return res.json(cached);
+  try {
+    const token = await getTwitchToken();
+
+    // Fetch 2 pages of 100 = top 200
+    let cursor = null;
+    let allGames = [];
+    for (let page = 0; page < 2; page++) {
+      const url = new URL("https://api.twitch.tv/helix/games/top");
+      url.searchParams.set("first", "100");
+      if (cursor) url.searchParams.set("after", cursor);
+      const r = await fetch(url.toString(), {
+        headers: twitchHeaders(token),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) break;
+      const j = await r.json();
+      allGames = [...allGames, ...(j.data || [])];
+      cursor = j.pagination?.cursor;
+      if (!cursor) break;
+    }
+
+    const results = allGames.map((g, i) => ({
+      rank:     i + 1,
+      name:     g.name,
+      twitchId: g.id,
+      coverUrl: g.box_art_url
+        ? g.box_art_url.replace("{width}", "120").replace("{height}", "160")
+        : null,
+    }));
+
+    setCache("games_top200", results, 10 * 60 * 1000);
+    res.json(results);
+  } catch (e) {
+    console.error("top200 error:", e);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -656,7 +696,7 @@ app.get("/api/charts/gmnscore", async (req, res) => {
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
-    const SCORE_GAME = "Subnautica 2";
+    const SCORE_GAME = "Crimson Desert";
     const r = await fetch("https://api.igdb.com/v4/games", {
       method: "POST",
       headers: twitchHeaders(token),
