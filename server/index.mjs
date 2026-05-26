@@ -6,11 +6,20 @@ configDotenv();
 import sanitizeHtml from "sanitize-html";
 import { JSDOM }    from "jsdom";
 import { XMLParser } from "fast-xml-parser";
+import { createClient } from "@supabase/supabase-js";
 
 if (typeof fetch === "undefined") {
   const { default: nodeFetch } = await import("node-fetch");
   globalThis.fetch = nodeFetch;
 }
+
+// ─────────────────────────────────────────────────────────────
+//  SUPABASE CLIENT (server-side, service role)
+// ─────────────────────────────────────────────────────────────
+const supabase = createClient(
+  process.env.VITE_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -54,6 +63,41 @@ const RSS_FEEDS = [
     name:     "PC Gamer",
     url:      "https://www.pcgamer.com/rss/",
     color:    "#e2001a",
+  },
+  {
+    name:     "GameRant",
+    url:      "https://gamerant.com/feed/",
+    color:    "#e85d04",
+  },
+  {
+    name:     "Rock Paper Shotgun",
+    url:      "https://www.rockpapershotgun.com/feed",
+    color:    "#6d6875",
+  },
+  {
+    name:     "Destructoid",
+    url:      "https://www.destructoid.com/feed/",
+    color:    "#1db954",
+  },
+  {
+    name:     "VGC",
+    url:      "https://www.videogameschronicle.com/feed/",
+    color:    "#0ea5e9",
+  },
+  {
+    name:     "GamesRadar",
+    url:      "https://www.gamesradar.com/rss/",
+    color:    "#7c3aed",
+  },
+  {
+    name:     "Insider Gaming",
+    url:      "https://insidergaming.com/feed/",
+    color:    "#f59e0b",
+  },
+  {
+    name:     "Dot Esports",
+    url:      "https://dotesports.com/feed",
+    color:    "#3b82f6",
   },
 ];
 
@@ -255,30 +299,75 @@ app.get("/api/articles/sources", (_req, res) => {
 //  /api/articles/search  —  Search articles by keyword (client-side filter on cached data)
 // ─────────────────────────────────────────────────────────────
 app.get("/api/articles/search", async (req, res) => {
-  const q      = (req.query.q || "").trim().toLowerCase();
+  const q      = (req.query.q || "").trim();
   const limit  = Math.min(100, Number(req.query.limit) || 20);
   const offset = Number(req.query.offset) || 0;
 
   if (!q) return res.json({ articles: [], paging: { total: 0, hasMore: false } });
 
+  const cacheKey = `search_${q.toLowerCase()}`;
+  const cached   = getCache(cacheKey);
+  if (cached) {
+    const page = cached.slice(offset, offset + limit);
+    return res.json({ articles: page, paging: { limit, offset, total: cached.length, hasMore: offset + limit < cached.length } });
+  }
+
   try {
-    // Always fetch fresh from all RSS feeds for search (up to 100 articles)
-    const results = await Promise.allSettled(RSS_FEEDS.map(fetchRSSFeed));
-    const all     = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
-    const seen    = new Set();
-    const articles = all
-      .filter(a => { if (seen.has(a.link)) return false; seen.add(a.link); return true; })
+    // Search Supabase archive first (has historical articles)
+    const { data: dbArticles, error } = await supabase
+      .from("articles")
+      .select("title, link, date, image, deck, source, source_color")
+      .or(`title.ilike.%${q}%,deck.ilike.%${q}%,source.ilike.%${q}%`)
+      .order("date", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (!error && dbArticles && dbArticles.length > 0) {
+      // Get total count for pagination
+      const { count } = await supabase
+        .from("articles")
+        .select("*", { count: "exact", head: true })
+        .or(`title.ilike.%${q}%,deck.ilike.%${q}%,source.ilike.%${q}%`);
+
+      const articles = dbArticles.map(a => ({
+        title:       a.title,
+        link:        a.link,
+        date:        a.date,
+        image:       a.image,
+        deck:        a.deck,
+        source:      a.source,
+        sourceColor: a.source_color,
+      }));
+
+      setCache(cacheKey, articles, 5 * 60 * 1000);
+      return res.json({
+        articles,
+        paging: { limit, offset, total: count || articles.length, hasMore: offset + limit < (count || 0) },
+        source: "archive",
+      });
+    }
+
+    // Fallback: search live RSS feeds if Supabase has no results yet
+    const results  = await Promise.allSettled(RSS_FEEDS.map(fetchRSSFeed));
+    const all      = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
+    const lower    = q.toLowerCase();
+    const seen     = new Set();
+    const matched  = all
+      .filter(a => {
+        if (!a.link || seen.has(a.link)) return false;
+        seen.add(a.link);
+        return (
+          a.title?.toLowerCase().includes(lower) ||
+          a.deck?.toLowerCase().includes(lower) ||
+          a.source?.toLowerCase().includes(lower)
+        );
+      })
       .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 
-    const filtered = articles.filter(a =>
-      a.title?.toLowerCase().includes(q) ||
-      a.deck?.toLowerCase().includes(q) ||
-      a.source?.toLowerCase().includes(q)
-    );
-
+    setCache(cacheKey, matched, 15 * 60 * 1000);
     res.json({
-      articles: filtered.slice(offset, offset + limit),
-      paging: { limit, offset, total: filtered.length, hasMore: offset + limit < filtered.length },
+      articles: matched.slice(offset, offset + limit),
+      paging: { limit, offset, total: matched.length, hasMore: offset + limit < matched.length },
+      source: "live",
     });
   } catch (e) {
     console.error("news search error:", e);
@@ -345,21 +434,64 @@ app.get("/api/article", async (req, res) => {
     if (!articleUrl) return res.status(400).json({ error: "Missing url param" });
 
     const u = new URL(articleUrl);
-    const allowed = ALLOWED_DOMAINS.some(d => u.hostname.endsWith(d));
-    if (!allowed)
-      return res.status(400).json({ error: "Domain not allowed", allowed: ALLOWED_DOMAINS });
+    if (!["http:", "https:"].includes(u.protocol))
+      return res.status(400).json({ error: "Invalid URL protocol" });
 
-    const htmlResp = await fetch(articleUrl, {
-      headers: { "User-Agent": "GMN-Reader/3.0 (+https://gmnnews.org)" },
+    // For Google News URLs — fetch the page to get the real redirect URL from HTML meta
+    let finalUrl = articleUrl;
+    if (u.hostname.includes("news.google.com")) {
+      try {
+        const gnResp = await fetch(articleUrl, {
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36" },
+          redirect: "follow",
+          signal: AbortSignal.timeout(8000),
+        });
+        // Try to extract real URL from the response URL or meta refresh
+        if (gnResp.url && !gnResp.url.includes("news.google.com")) {
+          finalUrl = gnResp.url;
+        } else {
+          const html = await gnResp.text();
+          const metaMatch = html.match(/url=([^"&']+)/i) || html.match(/href="(https?:\/\/(?!news\.google)[^"]+)"/);
+          if (metaMatch) finalUrl = decodeURIComponent(metaMatch[1]);
+        }
+      } catch {}
+    }
+
+    // Fetch the real article
+    const htmlResp = await fetch(finalUrl, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36" },
       signal: AbortSignal.timeout(10000),
     });
-    if (!htmlResp.ok) return res.status(502).json({ error: `Upstream ${htmlResp.status}` });
+
+    // Check if site allows iframing (for fallback in frontend)
+    const xFrameOptions = htmlResp.headers.get("x-frame-options") || "";
+    const csp = htmlResp.headers.get("content-security-policy") || "";
+    const allowsIframe = !xFrameOptions && !csp.includes("frame-ancestors");
+
+    if (!htmlResp.ok) {
+      // Return iframe fallback info so frontend can show iframe or redirect button
+      return res.status(200).json({
+        iframeFallback: true,
+        allowsIframe,
+        finalUrl,
+        title: null,
+      });
+    }
 
     const html   = await htmlResp.text();
-    const dom    = new JSDOM(html, { url: articleUrl });
+    const dom    = new JSDOM(html, { url: finalUrl });
     const { Readability } = await import("@mozilla/readability");
     const parsed = new Readability(dom.window.document).parse();
-    if (!parsed) return res.status(500).json({ error: "Unable to parse article" });
+
+    // If Readability cant parse it, return iframe fallback
+    if (!parsed) {
+      return res.status(200).json({
+        iframeFallback: true,
+        allowsIframe,
+        finalUrl,
+        title: dom.window.document.title || null,
+      });
+    }
 
     const clean = sanitizeHtml(parsed.content, {
       allowedTags: sanitizeHtml.defaults.allowedTags.concat(["img", "figure", "figcaption"]),
@@ -374,6 +506,9 @@ app.get("/api/article", async (req, res) => {
     });
 
     res.json({
+      iframeFallback: false,
+      allowsIframe,
+      finalUrl,
       title:     parsed.title,
       byline:    parsed.byline   || null,
       excerpt:   parsed.excerpt  || null,
@@ -696,7 +831,7 @@ app.get("/api/charts/gmnscore", async (req, res) => {
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
-    const SCORE_GAME = "Subnautica 2";
+    const SCORE_GAME = "Crimson Desert";
     const r = await fetch("https://api.igdb.com/v4/games", {
       method: "POST",
       headers: twitchHeaders(token),
@@ -831,11 +966,48 @@ app.get("/api/videos", async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 app.get("/", (_req, res) => res.type("text").send("GMN News API v3 — RSS Edition ✅"));
 
+// ─────────────────────────────────────────────────────────────
+//  RSS → SUPABASE ARCHIVER
+//  Runs on startup and every 30 minutes to save new articles
+// ─────────────────────────────────────────────────────────────
+async function archiveArticles() {
+  try {
+    const results = await Promise.allSettled(RSS_FEEDS.map(fetchRSSFeed));
+    const all     = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
+    if (!all.length) return;
+
+    // Upsert articles — link is unique so duplicates are ignored
+    const rows = all.map(a => ({
+      title:        a.title,
+      link:         a.link,
+      date:         a.date,
+      image:        a.image,
+      deck:         a.deck,
+      source:       a.source,
+      source_color: a.sourceColor,
+    })).filter(r => r.link);
+
+    const { error } = await supabase
+      .from("articles")
+      .upsert(rows, { onConflict: "link", ignoreDuplicates: true });
+
+    if (error) console.error("Supabase archive error:", error.message);
+    else console.log(`✅ Archived ${rows.length} articles to Supabase`);
+  } catch (e) {
+    console.error("Archive failed:", e.message);
+  }
+}
+
 const PORT = Number(process.env.PORT) || 3000;
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", async () => {
   console.log(`\n🎮 GMN News API v3 → http://localhost:${PORT}`);
-  console.log(`   Twitch:  ${TWITCH_CLIENT_ID   ? "✅ key found" : "❌ MISSING"}`);
-  console.log(`   Steam:   ${STEAM_API_KEY      ? "✅ key found" : "❌ MISSING"}`);
-  console.log(`   YouTube: ${YT_API_KEY         ? "✅ key found" : "❌ MISSING"}`);
-  console.log(`   News:    ✅ RSS feeds (IGN, Polygon, Kotaku, Eurogamer, PC Gamer)\n`);
+  console.log(`   Twitch:   ${TWITCH_CLIENT_ID            ? "✅ key found" : "❌ MISSING"}`);
+  console.log(`   Steam:    ${STEAM_API_KEY               ? "✅ key found" : "❌ MISSING"}`);
+  console.log(`   YouTube:  ${YT_API_KEY                  ? "✅ key found" : "❌ MISSING"}`);
+  console.log(`   Supabase: ${process.env.SUPABASE_SERVICE_KEY ? "✅ key found" : "❌ MISSING"}`);
+  console.log(`   News:     ✅ RSS feeds (12 sources)\n`);
+
+  // Archive articles on startup then every 30 minutes
+  await archiveArticles();
+  setInterval(archiveArticles, 30 * 60 * 1000);
 });
