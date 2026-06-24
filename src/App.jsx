@@ -152,7 +152,7 @@ function Header() {
         <div className="nav-inner">
           <NavLink to="/" className="logo" onClick={() => setOpen(false)}>
             <img
-              src="/important_stuff_v2.png"
+              src="/important_stuff.png"
               alt="GMN News"
               className="logo-img"
               width="38"
@@ -878,15 +878,16 @@ function ArticleDetailPage() {
   const [sp]  = useSearchParams();
   const url   = sp.get("url");
   const title = sp.get("title") || "Article";
-  const [data, setData]       = useState(null);
-  const [err, setErr]         = useState(null);
-  const [loading, setLoading] = useState(!!url);
+  const [data,       setData]       = useState(null);
+  const [err,        setErr]        = useState(null);
+  const [loading,    setLoading]    = useState(!!url);
+  const [iframeErr,  setIframeErr]  = useState(false);
 
   useEffect(() => {
     if (!url) return;
     (async () => {
       try {
-        setLoading(true); setErr(null);
+        setLoading(true); setErr(null); setIframeErr(false);
         const r = await fetch(`${readerBase}?url=${encodeURIComponent(url)}`);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         setData(await r.json());
@@ -896,6 +897,70 @@ function ArticleDetailPage() {
     })();
   }, [readerBase, url]);
 
+  // Extract hostname for display
+  const siteName = data?.siteName || (() => {
+    try { return new URL(data?.finalUrl || url).hostname.replace("www.", ""); } catch { return "source"; }
+  })();
+
+  // Iframe fallback — site allows iframing
+  if (!loading && data?.iframeFallback && data?.allowsIframe && data?.finalUrl) {
+    return (
+      <div className="article-detail-wrap">
+        <h1 style={{ fontFamily: "var(--font-display)", fontSize: "clamp(20px,4vw,36px)", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 8 }}>
+          {title}
+        </h1>
+        <p className="micro" style={{ marginBottom: 12 }}>
+          Reading on <strong>{siteName}</strong> —
+          <a href={data.finalUrl} target="_blank" rel="noopener" style={{ color: "var(--blue)", marginLeft: 6 }}>Open in new tab ↗</a>
+        </p>
+        {!iframeErr && (
+          <iframe
+            src={data.finalUrl}
+            title={title}
+            onError={() => setIframeErr(true)}
+            style={{ width: "100%", height: "80vh", border: "none", borderRadius: 12, background: "#fff" }}
+          />
+        )}
+        {iframeErr && (
+          <div className="card" style={{ padding: 24, textAlign: "center" }}>
+            <p style={{ marginBottom: 16, color: "var(--muted)" }}>This site can't be embedded.</p>
+            <a href={data.finalUrl} target="_blank" rel="noopener"
+              style={{ background: "var(--red)", color: "#fff", padding: "12px 24px", borderRadius: 10, fontWeight: 700, textDecoration: "none" }}>
+              Read on {siteName} ↗
+            </a>
+          </div>
+        )}
+        <CommentsSection articleUrl={url} articleTitle={title} />
+      </div>
+    );
+  }
+
+  // No iframe allowed — show a clean redirect button
+  if (!loading && data?.iframeFallback && !data?.allowsIframe && data?.finalUrl) {
+    return (
+      <div className="article-detail-wrap">
+        <h1 style={{ fontFamily: "var(--font-display)", fontSize: "clamp(20px,4vw,36px)", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 16 }}>
+          {title}
+        </h1>
+        <div className="card" style={{ padding: 32, textAlign: "center" }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>📰</div>
+          <p style={{ color: "var(--muted)", marginBottom: 8, fontSize: 15 }}>
+            This article is hosted on <strong>{siteName}</strong>
+          </p>
+          <p style={{ color: "var(--muted2)", fontSize: 13, marginBottom: 24 }}>
+            This site doesn't allow embedding — click below to read the full article.
+          </p>
+          <a href={data.finalUrl} target="_blank" rel="noopener"
+            style={{ background: "var(--red)", color: "#fff", padding: "14px 28px", borderRadius: 12, fontWeight: 700, textDecoration: "none", fontSize: 15 }}>
+            Read Full Article on {siteName} ↗
+          </a>
+        </div>
+        <CommentsSection articleUrl={url} articleTitle={title} />
+      </div>
+    );
+  }
+
+  // Normal reader view
   return (
     <div className="article-detail-wrap">
       {!url && (
@@ -909,10 +974,22 @@ function ArticleDetailPage() {
             {data?.title || title}
           </h1>
           {data?.byline && <p className="micro" style={{ marginBottom: 16 }}>{data.byline}</p>}
+          {data?.finalUrl && (
+            <p className="micro" style={{ marginBottom: 16 }}>
+              Source: <a href={data.finalUrl} target="_blank" rel="noopener" style={{ color: "var(--blue)" }}>{siteName} ↗</a>
+            </p>
+          )}
           {loading && <div className="card skeleton-box" style={{ height: 200, padding: 16 }} />}
           {err && (
-            <div className="card" style={{ borderColor: "#fca5a5", padding: 16 }}>
-              <strong>Couldn't load article.</strong> <span className="micro">({err})</span>
+            <div className="card" style={{ padding: 32, textAlign: "center" }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>📰</div>
+              <p style={{ color: "var(--muted)", marginBottom: 24, fontSize: 15 }}>
+                Unable to load this article in the reader.
+              </p>
+              <a href={url} target="_blank" rel="noopener"
+                style={{ background: "var(--red)", color: "#fff", padding: "14px 28px", borderRadius: 12, fontWeight: 700, textDecoration: "none", fontSize: 15 }}>
+                Read Full Article ↗
+              </a>
             </div>
           )}
           {data?.leadImage && (
@@ -925,12 +1002,7 @@ function ArticleDetailPage() {
               <div dangerouslySetInnerHTML={{ __html: data.html }} />
             </div>
           )}
-
-          {/* Comments */}
-          <CommentsSection
-            articleUrl={url}
-            articleTitle={data?.title || title}
-          />
+          <CommentsSection articleUrl={url} articleTitle={data?.title || title} />
         </>
       )}
     </div>
@@ -1226,30 +1298,75 @@ function SupportPage() {
    PRIVACY
 ───────────────────────────────────────── */
 function PrivacyPage() {
-  const today = new Date().toLocaleDateString();
+  const s = { color: "var(--muted2)", lineHeight: 1.8, fontSize: 14 };
+  const h = { color: "var(--text)", fontSize: 13, fontWeight: 700, letterSpacing: "0.4px", textTransform: "uppercase", marginBottom: 8, marginTop: 28 };
   return (
     <div className="privacy-page">
       <section className="page-hero" style={{ textAlign: "center" }}>
         <h1>Privacy Policy</h1>
-        <p>We collect as little as possible and never sell your data.</p>
+        <p style={{ color: "var(--muted2)", fontSize: 13 }}>Effective Date: June 24, 2026 &nbsp;·&nbsp; Last Updated: June 24, 2026</p>
       </section>
-      <section className="card policy-card" style={{ maxWidth: 900, margin: "0 auto 28px", padding: 24, borderRadius: 20 }}>
-        <h2>Quick summary</h2>
-        <ul className="bullets" style={{ paddingLeft: 18, color: "var(--muted2)" }}>
-          <li>No accounts.</li>
-          <li>Support forms send us your name, email, and message via Formspree.</li>
-          <li>Our server keeps minimal logs for security and debugging.</li>
-          <li>We never sell your personal information.</li>
+
+      <section className="card policy-card" style={{ maxWidth: 860, margin: "0 auto 60px", padding: "32px 40px", borderRadius: 20 }}>
+
+        <p style={s}>
+          This Privacy Policy ("Policy") governs the collection, use, and disclosure of personal information by GMN News ("Company," "we," "us," or "our") in connection with the website located at gmnnews.org ("Site"). By accessing or using the Site, you acknowledge that you have read, understood, and agree to be bound by this Policy. If you do not agree, please discontinue use of the Site immediately.
+        </p>
+
+        <p style={h}>1. Information We Collect</p>
+        <p style={s}>We collect the following categories of information:</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>a. Account Data.</strong> When you register for an account, we collect your username, email address, and encrypted password. If you authenticate via a third-party provider (Google or Discord), we receive your email address and basic public profile information from that provider pursuant to their respective terms of service.</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>b. User-Generated Content.</strong> We collect and store content you voluntarily submit to the Site, including game reviews, article comments, avatar images, favorite games, and followed games. This content may be publicly visible to other users of the Site.</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>c. Profile Information.</strong> We collect optional profile information you choose to provide, including a biographical description and preferred gaming platform.</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>d. Technical Data.</strong> We automatically collect standard server log data including IP addresses, browser type and version, operating system, referring URLs, and access timestamps. This data is used solely for security monitoring and operational purposes.</p>
+
+        <p style={h}>2. Use of Information</p>
+        <p style={s}>We use collected information solely for the following purposes:</p>
+        <ul className="bullets" style={{ paddingLeft: 18, color: "var(--muted2)", lineHeight: 2.2, fontSize: 14 }}>
+          <li>To create, authenticate, and maintain user accounts</li>
+          <li>To display user-generated content on the Site</li>
+          <li>To facilitate account recovery and transactional email communications</li>
+          <li>To ensure the security, integrity, and performance of the Site</li>
+          <li>To comply with applicable legal obligations</li>
         </ul>
-        <h2>What we collect</h2>
-        <p style={{ color: "var(--muted2)" }}>Support form submissions (name, email, details). Standard server logs (IP, user agent, timestamps). No personal profiles are built from logs.</p>
-        <h2>Content APIs</h2>
-        <p style={{ color: "var(--muted2)" }}>Articles are fetched from GameSpot; videos via YouTube Data API. We don't send your data to these providers. If you follow external links, their privacy policies apply.</p>
-        <h2>Cookies & tracking</h2>
-        <p style={{ color: "var(--muted2)" }}>We don't use advertising cookies or cross-site tracking.</p>
-        <h2>Contact</h2>
-        <p style={{ color: "var(--muted2)" }}>Questions? Email <a href="mailto:gmn.news.official@gmail.com" style={{ color: "var(--blue)" }}>gmn.news.official@gmail.com</a></p>
-        <p className="micro" style={{ marginTop: 20 }}>Effective date: {today}</p>
+
+        <p style={h}>3. Disclosure of Information</p>
+        <p style={s}>We do not sell, rent, trade, or otherwise transfer your personal information to third parties for commercial purposes. We may disclose information in the following limited circumstances:</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>a. Service Providers.</strong> We engage the following third-party service providers who process data on our behalf: Supabase, Inc. (database and authentication infrastructure); Cloudflare, Inc. (content delivery and frontend hosting); and Render Services, Inc. (backend hosting). These providers are contractually obligated to process data only as directed by us.</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>b. Third-Party Content APIs.</strong> The Site displays content sourced from Twitch Interactive, Inc. (IGDB and Helix API), Valve Corporation (Steam Web API), Fandom, Inc. (GameSpot), and YouTube LLC. Personal information is not transmitted to these providers in connection with content delivery.</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>c. Legal Requirements.</strong> We may disclose information if required to do so by law or in good-faith belief that such disclosure is necessary to comply with legal process, protect the rights or safety of the Company or others, or respond to claims of unlawful activity.</p>
+
+        <p style={h}>4. Data Retention</p>
+        <p style={s}>We retain account data and user-generated content for as long as your account remains active. Upon account deletion, your personal data is permanently removed from our systems within a reasonable timeframe, except where retention is required by applicable law.</p>
+
+        <p style={h}>5. Security</p>
+        <p style={s}>We implement commercially reasonable technical and organizational measures to protect your personal information against unauthorized access, disclosure, alteration, or destruction. These measures include encrypted password storage, row-level security policies on our database, and HTTPS encryption for all data in transit. However, no method of transmission over the internet is 100% secure, and we cannot guarantee absolute security.</p>
+
+        <p style={h}>6. Your Rights</p>
+        <p style={s}>You may access, update, or delete your personal information at any time through your account settings. Account deletion results in permanent removal of your profile, reviews, comments, and associated data. To exercise any rights not available through the Site interface, please contact us at the address below.</p>
+
+        <p style={h}>7. Cookies</p>
+        <p style={s}>The Site uses a session authentication token stored in your browser to maintain your logged-in state. We do not deploy advertising cookies, cross-site tracking technologies, or third-party analytics cookies.</p>
+
+        <p style={h}>8. Children's Privacy</p>
+        <p style={s}>The Site is not directed to individuals under the age of 13. We do not knowingly collect personal information from children under 13. If we become aware that a child under 13 has provided personal information, we will promptly delete such information. If you believe a child has submitted information to us, please contact us immediately.</p>
+
+        <p style={h}>9. Third-Party Links</p>
+        <p style={s}>The Site may contain links to third-party websites. We are not responsible for the privacy practices or content of such sites. We encourage you to review the privacy policies of any third-party sites you visit.</p>
+
+        <p style={h}>10. Changes to This Policy</p>
+        <p style={s}>We reserve the right to modify this Policy at any time. Material changes will be indicated by an updated effective date at the top of this page. Your continued use of the Site following the posting of changes constitutes acceptance of the revised Policy.</p>
+
+        <p style={h}>11. Contact Information</p>
+        <p style={s}>
+          For privacy-related inquiries, please contact us at:<br />
+          <strong style={{ color: "var(--text)" }}>GMN News</strong><br />
+          Email: <a href="mailto:contact@gmnnews.org" style={{ color: "var(--blue)" }}>contact@gmnnews.org</a><br />
+        </p>
+
+        <p style={{ ...s, marginTop: 32, paddingTop: 20, borderTop: "1px solid var(--ring)", fontSize: 12 }}>
+          © 2026 GMN News. All rights reserved. This Privacy Policy is governed by the laws of the United States.
+        </p>
       </section>
     </div>
   );
