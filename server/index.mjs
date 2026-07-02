@@ -912,6 +912,74 @@ app.get("/api/games/search", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+//  /api/games/hub?q=NAME  —  Full game profile (IGDB + Twitch + Steam)
+// ─────────────────────────────────────────────────────────────
+app.get("/api/games/hub", async (req, res) => {
+  const q = (req.query.q || "").trim();
+  if (!q) return res.status(400).json({ error: "Missing q param" });
+  const cacheKey = `game_hub_${q.toLowerCase()}`;
+  const cached = getCache(cacheKey);
+  if (cached) return res.json(cached);
+  try {
+    const token = await getTwitchToken();
+
+    const ir = await fetch("https://api.igdb.com/v4/games", {
+      method: "POST",
+      headers: twitchHeaders(token),
+      body: `search "${q.replace(/"/g, "")}"; fields name, cover.url, platforms.name, first_release_date, summary, aggregated_rating, rating, involved_companies.company.name; where version_parent = null; limit 1;`,
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!ir.ok) throw new Error(`IGDB ${ir.status}`);
+    const game = (await ir.json())[0];
+    if (!game) return res.status(404).json({ error: "No game found" });
+
+    const agg = game.aggregated_rating ? Math.round(game.aggregated_rating) : null;
+    const usr = game.rating ? Math.round(game.rating) : null;
+    const gmnScore = (agg || usr) ? Math.round(((agg || usr) + (usr || agg)) / 2) : null;
+    const coverUrl = game.cover?.url
+      ? ("https:" + game.cover.url.replace("t_thumb", "t_cover_big")).replace("https:https:", "https:")
+      : null;
+
+    let twitchViewers = null;
+    try {
+      const gr = await fetch(`https://api.twitch.tv/helix/games?name=${encodeURIComponent(game.name)}`, {
+        headers: twitchHeaders(token), signal: AbortSignal.timeout(6000),
+      });
+      const gid = (await gr.json()).data?.[0]?.id;
+      if (gid) {
+        const sr = await fetch(`https://api.twitch.tv/helix/streams?game_id=${gid}&first=100`, {
+          headers: twitchHeaders(token), signal: AbortSignal.timeout(6000),
+        });
+        twitchViewers = ((await sr.json()).data || []).reduce((s, x) => s + (x.viewer_count || 0), 0);
+      }
+    } catch (e) {}
+
+    const steamId = KNOWN_STEAM_IDS[game.name] ?? null;
+    const steamPlayers = steamId ? await fetchSteamPlayers(steamId) : null;
+
+    const result = {
+      name: game.name,
+      coverUrl,
+      developer: game.involved_companies?.[0]?.company?.name || null,
+      platforms: (game.platforms || []).map(p => p.name).slice(0, 3).join(", ") || null,
+      year: game.first_release_date ? new Date(game.first_release_date * 1000).getFullYear() : null,
+      summary: game.summary ? game.summary.slice(0, 240) : null,
+      igdbRating: agg || usr || null,
+      gmnScore,
+      twitchViewers,
+      twitchViewersLabel: twitchViewers != null ? formatPlayerCount(twitchViewers) : null,
+      steamPlayers,
+      steamPlayersLabel: steamPlayers != null ? formatPlayerCount(steamPlayers) : null,
+    };
+    setCache(cacheKey, result, 5 * 60 * 1000);
+    res.json(result);
+  } catch (e) {
+    console.error("game hub error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 //  /api/videos  —  YouTube playlist
 // ─────────────────────────────────────────────────────────────
 app.get("/api/videos", async (req, res) => {
