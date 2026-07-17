@@ -376,6 +376,53 @@ app.get("/api/articles/search", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+//  Non-game Twitch categories
+//  Twitch's "top games" list mixes in talk/IRL/music categories that aren't
+//  games. GMN is a gaming chart, so they're filtered out everywhere.
+//  To hide another category, just add its exact Twitch name here.
+// ─────────────────────────────────────────────────────────────
+const NON_GAME_CATEGORIES = new Set([
+  "Just Chatting",
+  "IRL",
+  "Pools, Hot Tubs, and Beaches",
+  "Music",
+  "DJs",
+  "Art",
+  "Makers & Crafting",
+  "Food & Drink",
+  "Sports",
+  "Fitness & Health",
+  "Talk Shows & Podcasts",
+  "ASMR",
+  "Travel & Outdoors",
+  "Special Events",
+  "Watch Parties",
+  "Politics",
+  "Science & Technology",
+  "Software and Game Development",
+  "Animals, Aquariums, and Zoos",
+  "Beauty & Body Art",
+  "Slots",
+  "Poker",
+  "Virtual Casino",
+  "Casino",
+  "Crypto",
+  "Stocks & Cryptocurrency",
+  "Retro",
+  "Games + Demos",
+  "Creative",
+  "Chess",
+  "Tabletop RPGs",
+  "Bingo",
+  "Sleep & Relaxation",
+  "Body Art",
+]);
+
+function isRealGame(name) {
+  return !!name && !NON_GAME_CATEGORIES.has(name.trim());
+}
+
+// ─────────────────────────────────────────────────────────────
 //  /api/games/top200  —  Top 200 Twitch games for search
 // ─────────────────────────────────────────────────────────────
 app.get("/api/games/top200", async (req, res) => {
@@ -402,14 +449,16 @@ app.get("/api/games/top200", async (req, res) => {
       if (!cursor) break;
     }
 
-    const results = allGames.map((g, i) => ({
-      rank:     i + 1,
-      name:     g.name,
-      twitchId: g.id,
-      coverUrl: g.box_art_url
-        ? g.box_art_url.replace("{width}", "120").replace("{height}", "160")
-        : null,
-    }));
+    const results = allGames
+      .filter(g => isRealGame(g.name))
+      .map((g, i) => ({
+        rank:     i + 1,
+        name:     g.name,
+        twitchId: g.id,
+        coverUrl: g.box_art_url
+          ? g.box_art_url.replace("{width}", "120").replace("{height}", "160")
+          : null,
+      }));
 
     setCache("games_top200", results, 10 * 60 * 1000);
     res.json(results);
@@ -605,13 +654,17 @@ app.get("/api/charts", async (req, res) => {
   try {
     const token = await getTwitchToken();
 
+    // Pull 100 so that after removing non-game categories (Just Chatting,
+    // IRL, DJs, Art…) there are still a full 50 real games to rank.
     const twitchRes = await fetch(
-      "https://api.twitch.tv/helix/games/top?first=50",
+      "https://api.twitch.tv/helix/games/top?first=100",
       { headers: twitchHeaders(token), signal: AbortSignal.timeout(8000) }
     );
     if (!twitchRes.ok) throw new Error(`Twitch top games ${twitchRes.status}`);
     const twitchData  = await twitchRes.json();
-    const twitchGames = twitchData.data || [];
+    const twitchGames = (twitchData.data || [])
+      .filter(g => isRealGame(g.name))
+      .slice(0, 50);
 
     const gameIds = twitchGames.map(g => `game_id=${g.id}`).join("&");
     const streamsRes = await fetch(
@@ -714,19 +767,22 @@ app.get("/api/charts/streams", async (req, res) => {
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
-    const r = await fetch("https://api.twitch.tv/helix/games/top?first=20", {
+    const r = await fetch("https://api.twitch.tv/helix/games/top?first=50", {
       headers: twitchHeaders(token),
       signal: AbortSignal.timeout(8000),
     });
     if (!r.ok) throw new Error(`Twitch ${r.status}`);
     const { data } = await r.json();
-    const result = (data || []).map((g, i) => ({
-      rank:     i + 1,
-      name:     g.name,
-      coverUrl: g.box_art_url
-        ? g.box_art_url.replace("{width}", "80").replace("{height}", "107")
-        : null,
-    }));
+    const result = (data || [])
+      .filter(g => isRealGame(g.name))
+      .slice(0, 20)
+      .map((g, i) => ({
+        rank:     i + 1,
+        name:     g.name,
+        coverUrl: g.box_art_url
+          ? g.box_art_url.replace("{width}", "80").replace("{height}", "107")
+          : null,
+      }));
     setCache("streams", result, 5 * 60 * 1000);
     res.json(result);
   } catch (e) {
