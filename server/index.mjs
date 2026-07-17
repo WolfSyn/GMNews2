@@ -384,6 +384,7 @@ app.get("/api/articles/search", async (req, res) => {
 const NON_GAME_CATEGORIES = new Set([
   "Just Chatting",
   "IRL",
+  "Streamer University",
   "Pools, Hot Tubs, and Beaches",
   "Music",
   "DJs",
