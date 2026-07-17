@@ -622,6 +622,65 @@ async function fetchSteamPlayers(appId) {
   } catch { return null; }
 }
 
+// ─────────────────────────────────────────────────────────────
+//  Steam app-id resolution
+//  KNOWN_STEAM_IDS only covers a handful of games by hand. For anything
+//  else we ask Steam's store search for the app id, then cache the answer
+//  (including "not on Steam") for a week so this costs ~nothing per build.
+// ─────────────────────────────────────────────────────────────
+function normalizeGameName(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+async function resolveSteamAppId(name) {
+  if (!name) return null;
+
+  // Hand-curated map wins. An explicit null means "known NOT on Steam"
+  // (e.g. Minecraft), so don't waste a lookup.
+  if (Object.prototype.hasOwnProperty.call(KNOWN_STEAM_IDS, name)) {
+    return KNOWN_STEAM_IDS[name];
+  }
+
+  const key = `steam_appid_${normalizeGameName(name)}`;
+  const cached = getCache(key);
+  if (cached !== null && cached !== undefined) {
+    return cached.appId ?? null;   // cached negatives stored as { appId: null }
+  }
+
+  let appId = null;
+  try {
+    const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(name)}&cc=us&l=en`;
+    const r = await fetch(url, {
+      headers: { "User-Agent": "GMN-News/3.0" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (r.ok) {
+      const j = await r.json();
+      const items = j?.items || [];
+      const target = normalizeGameName(name);
+      // Prefer an exact normalized match; otherwise accept a clear prefix
+      // match (handles "Counter-Strike" → "Counter-Strike 2").
+      const exact  = items.find(it => normalizeGameName(it.name) === target);
+      const prefix = items.find(it => normalizeGameName(it.name).startsWith(target));
+      appId = exact?.id ?? prefix?.id ?? null;
+    }
+  } catch { /* leave appId null */ }
+
+  setCache(key, { appId }, 7 * 24 * 60 * 60 * 1000);
+  return appId;
+}
+
+/// Player count for a game by NAME (resolves the app id first).
+async function fetchSteamPlayersByName(name) {
+  const appId = await resolveSteamAppId(name);
+  if (!appId) return null;
+  return fetchSteamPlayers(appId);
+}
+
 async function fetchIGDBCovers(gameNames, token) {
   const namesList = gameNames.map(n => `"${n.replace(/"/g, "")}"`).join(",");
   const body = `
@@ -682,6 +741,14 @@ app.get("/api/charts", async (req, res) => {
     const gameNames = twitchGames.map(g => g.name);
     const igdbGames = await fetchIGDBCovers(gameNames, token);
 
+    // Steam player counts for every game in the chart (not just the
+    // hand-mapped ones). Done in parallel; app-id lookups are cached a week.
+    const steamCounts = await Promise.all(
+      gameNames.map(n => fetchSteamPlayersByName(n).catch(() => null))
+    );
+    const steamByName = {};
+    gameNames.forEach((n, i) => { steamByName[n] = steamCounts[i]; });
+
     const igdbByName = {};
     for (const g of igdbGames) igdbByName[g.name?.toLowerCase()] = g;
 
@@ -699,8 +766,7 @@ app.get("/api/charts", async (req, res) => {
         ? igdb.cover.url.replace("t_thumb", "t_cover_big").replace("http://", "https://")
         : null;
       const igdbRating = igdb?.rating ? Math.round(igdb.rating) : null;
-      const steamId    = KNOWN_STEAM_IDS[name] ?? null;
-      const steamCount = steamId ? await fetchSteamPlayers(steamId) : null;
+      const steamCount = steamByName[name] ?? null;
 
       const prevRank = prevRanks[name];
       let trend, trendLabel;
@@ -1011,8 +1077,7 @@ app.get("/api/games/hub", async (req, res) => {
       }
     } catch (e) {}
 
-    const steamId = KNOWN_STEAM_IDS[game.name] ?? null;
-    const steamPlayers = steamId ? await fetchSteamPlayers(steamId) : null;
+    const steamPlayers = await fetchSteamPlayersByName(game.name);
 
     const result = {
       name: game.name,
