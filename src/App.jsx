@@ -223,7 +223,7 @@ function Header() {
         <div className="nav-inner">
           <NavLink to="/" className="logo" onClick={() => setOpen(false)}>
             <img
-              src="/important_stuff.png"
+              src="/important_stuff_v2.png"
               alt="GMN News"
               className="logo-img"
               width="38"
