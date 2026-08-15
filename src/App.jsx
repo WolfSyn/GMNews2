@@ -140,8 +140,12 @@ function RootLayout() {
 }
 
 function ScrollToTop() {
-  const { pathname } = useLocation();
-  useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
+  const { pathname, search } = useLocation();
+  useEffect(() => {
+    // Don't scroll to top if page uses search params (like article-detail)
+    if (search) return;
+    window.scrollTo(0, 0);
+  }, [pathname]);
   return null;
 }
 
@@ -223,7 +227,7 @@ function Header() {
         <div className="nav-inner">
           <NavLink to="/" className="logo" onClick={() => setOpen(false)}>
             <img
-              src="/important_stuff_v2.png"
+              src="/important_stuff.png"
               alt="GMN News"
               className="logo-img"
               width="38"
@@ -820,7 +824,7 @@ function HomePage() {
             <article className="article-card" key={i}>
               <a href={a ? `/article-detail?url=${encodeURIComponent(a.link)}&title=${encodeURIComponent(a.title)}` : "#"}>
                 {a?.image
-                  ? <img className="article-thumb" src={a.image} alt={a.title} loading="lazy" />
+                  ? <img className="article-thumb" src={a.image} alt={decodeEntities(a.title)} loading="lazy" />
                   : <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
                 }
               </a>
@@ -829,9 +833,9 @@ function HomePage() {
                   <span className="badge">NEWS</span>
                   {a?.date && <time className="micro" dateTime={a.date}>{timeAgo(a.date)}</time>}
                 </div>
-                <h3 className="article-title">
+                <h3 className="article-title decoded">
                   {a
-                    ? <a href={`/article-detail?url=${encodeURIComponent(a.link)}&title=${encodeURIComponent(a.title)}`}>{a.title}</a>
+                    ? <a href={`/article-detail?url=${encodeURIComponent(a.link)}&title=${encodeURIComponent(a.title)}`}>{decodeEntities(a.title)}</a>
                     : <span className="skeleton-box" style={{ display: "block", height: 14, borderRadius: 6 }} />
                   }
                 </h3>
@@ -847,6 +851,26 @@ function HomePage() {
 /* ─────────────────────────────────────────
    SHARED HELPER
 ───────────────────────────────────────── */
+// Decode HTML entities like &#8220; → " 
+function decodeEntities(str) {
+  if (!str) return str;
+  return str
+    .replace(/&#8220;/g, '“')
+    .replace(/&#8221;/g, '”')
+    .replace(/&#8216;/g, '‘')
+    .replace(/&#8217;/g, '’')
+    .replace(/&#8211;/g, '–')
+    .replace(/&#8212;/g, '—')
+    .replace(/&#038;/g, '&')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&[a-zA-Z]+;/g, '');
+}
+
 function timeAgo(iso) {
   if (!iso) return "";
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -921,16 +945,8 @@ function ArticlesPage() {
     fetchArticles(true);
   }, [filter, API_BASE, REVIEWS_BASE]); // eslint-disable-line
 
-  useEffect(() => {
-    const el = loadMoreRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      entries => { if (entries.some(e => e.isIntersecting) && paging.hasMore) fetchArticles(); },
-      { rootMargin: "600px" }
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [paging.hasMore]); // eslint-disable-line
+  // Removed auto-infinite-scroll observer — it was causing scroll jumps
+  // Load More is now manual button only
 
   const goToTag = tag => navigate(tag === "all" ? "/articles" : `/articles?tag=${tag}`);
 
@@ -972,7 +988,7 @@ function ArticlesPage() {
             <article className="article-card" key={i}>
               <a href={url} style={{ display: "block" }}>
                 {a.image
-                  ? <img loading="lazy" src={a.image} alt={a.title} className="article-thumb" />
+                  ? <img loading="lazy" src={a.image} alt={decodeEntities(a.title)} className="article-thumb" />
                   : <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
                 }
               </a>
@@ -984,7 +1000,7 @@ function ArticlesPage() {
                     <span className="badge" style={{ marginLeft: 6 }}>⭐ {a.score}</span>
                   )}
                 </div>
-                <h2 className="article-title"><a href={url}>{a.title}</a></h2>
+                <h2 className="article-title"><a href={url}>{decodeEntities(a.title)}</a></h2>
               </div>
             </article>
           );
@@ -1034,6 +1050,58 @@ function ArticleDetailPage() {
   const siteName = data?.siteName || (() => {
     try { return new URL(data?.finalUrl || url).hostname.replace("www.", ""); } catch { return "source"; }
   })();
+
+  const articleTitle = decodeEntities(data?.title || title);
+
+  // SEO meta tags — update document head dynamically
+  useEffect(() => {
+    if (!articleTitle) return;
+    // Title
+    document.title = `${articleTitle} | GMN News`;
+    // Meta description
+    let desc = document.querySelector('meta[name="description"]');
+    if (!desc) { desc = document.createElement("meta"); desc.name = "description"; document.head.appendChild(desc); }
+    desc.content = data?.excerpt || `${articleTitle} — Read on GMN News, the Billboard of Gaming.`;
+    // OG tags
+    const og = (prop, val) => {
+      let el = document.querySelector(`meta[property="${prop}"]`);
+      if (!el) { el = document.createElement("meta"); el.setAttribute("property", prop); document.head.appendChild(el); }
+      el.setAttribute("content", val);
+    };
+    og("og:title",       articleTitle);
+    og("og:description", data?.excerpt || `${articleTitle} — GMN News`);
+    og("og:image",       data?.leadImage || "https://gmnnews.org/images/favicon-32x32.png");
+    og("og:site_name",   "GMN News");
+    og("og:type",        "article");
+    // Twitter/X card
+    const tw = (name, val) => {
+      let el = document.querySelector(`meta[name="${name}"]`);
+      if (!el) { el = document.createElement("meta"); el.setAttribute("name", name); document.head.appendChild(el); }
+      el.setAttribute("content", val);
+    };
+    tw("twitter:card",        "summary_large_image");
+    tw("twitter:title",       articleTitle);
+    tw("twitter:description", data?.excerpt || `${articleTitle} — GMN News`);
+    tw("twitter:image",       data?.leadImage || "https://gmnnews.org/images/favicon-32x32.png");
+    tw("twitter:site",        "@GMN_News");
+    return () => { document.title = "GMN News"; };
+  }, [data]); // only run when data fully loads, not on every render
+
+  // Share functions
+  const [copied, setCopied] = useState(false);
+  function shareToX() {
+    const text = `${articleTitle} via @GMN_News`;
+    window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(window.location.href)}`, "_blank");
+  }
+  function shareToReddit() {
+    window.open(`https://reddit.com/submit?url=${encodeURIComponent(url)}&title=${encodeURIComponent(articleTitle)}`, "_blank");
+  }
+  function copyLink() {
+    navigator.clipboard.writeText(window.location.href).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
 
   // Iframe fallback — site allows iframing
   if (!loading && data?.iframeFallback && data?.allowsIframe && data?.finalUrl) {
@@ -1104,14 +1172,55 @@ function ArticleDetailPage() {
       {url && (
         <>
           <h1 style={{ fontFamily: "var(--font-display)", fontSize: "clamp(24px,4vw,40px)", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 8 }}>
-            {data?.title || title}
+            {articleTitle}
           </h1>
-          {data?.byline && <p className="micro" style={{ marginBottom: 16 }}>{data.byline}</p>}
+          {data?.byline && <p className="micro" style={{ marginBottom: 8 }}>{data.byline}</p>}
           {data?.finalUrl && (
-            <p className="micro" style={{ marginBottom: 16 }}>
+            <p className="micro" style={{ marginBottom: 12 }}>
               Source: <a href={data.finalUrl} target="_blank" rel="noopener" style={{ color: "var(--blue)" }}>{siteName} ↗</a>
             </p>
           )}
+          {/* Share buttons */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+            <button onClick={shareToX} style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              padding: "7px 14px", borderRadius: 8, border: "1px solid var(--ring-md)",
+              background: "transparent", color: "var(--text)", fontSize: 12,
+              fontWeight: 700, cursor: "pointer", transition: ".15s",
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.06)"}
+            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.741l7.73-8.835L1.254 2.25H8.08l4.261 5.632 5.903-5.632Zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+              </svg>
+              Share on X
+            </button>
+            <button onClick={shareToReddit} style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              padding: "7px 14px", borderRadius: 8, border: "1px solid var(--ring-md)",
+              background: "transparent", color: "var(--text)", fontSize: 12,
+              fontWeight: 700, cursor: "pointer", transition: ".15s",
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(255,69,0,0.08)"}
+            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="#ff4500">
+                <path d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 0 0-.231.094.33.33 0 0 0 0 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 0 0 .029-.463.33.33 0 0 0-.464 0c-.547.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 0 0-.232-.095z"/>
+              </svg>
+              Share on Reddit
+            </button>
+            <button onClick={copyLink} style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              padding: "7px 14px", borderRadius: 8,
+              border: copied ? "1px solid var(--green)" : "1px solid var(--ring-md)",
+              background: copied ? "rgba(34,211,94,0.08)" : "transparent",
+              color: copied ? "var(--green)" : "var(--text)", fontSize: 12,
+              fontWeight: 700, cursor: "pointer", transition: ".15s",
+            }}>
+              {copied ? "✓ Copied!" : "🔗 Copy Link"}
+            </button>
+          </div>
           {loading && <div className="card skeleton-box" style={{ height: 200, padding: 16 }} />}
           {err && (
             <div className="card" style={{ padding: 32, textAlign: "center" }}>
@@ -1708,7 +1817,7 @@ function SearchPage() {
                     <article className="article-card" key={i}>
                       <a href={url}>
                         {a.image
-                          ? <img className="article-thumb" src={a.image} alt={a.title} loading="lazy" />
+                          ? <img className="article-thumb" src={a.image} alt={decodeEntities(a.title)} loading="lazy" />
                           : <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
                         }
                       </a>
@@ -1717,7 +1826,7 @@ function SearchPage() {
                           <span className="badge">{a.source || "NEWS"}</span>
                           {a.date && <time className="micro" dateTime={a.date}>{timeAgo(a.date)}</time>}
                         </div>
-                        <h2 className="article-title"><a href={url}>{a.title}</a></h2>
+                        <h2 className="article-title"><a href={url}>{decodeEntities(a.title)}</a></h2>
                       </div>
                     </article>
                   );
@@ -1865,7 +1974,7 @@ function GameDetailPage() {
               <article className="article-card" key={i}>
                 <a href={url}>
                   {a.image
-                    ? <img className="article-thumb" src={a.image} alt={a.title} loading="lazy" />
+                    ? <img className="article-thumb" src={a.image} alt={decodeEntities(a.title)} loading="lazy" />
                     : <div className="article-thumb skeleton-box" style={{ aspectRatio: "16/9" }} />
                   }
                 </a>
@@ -1874,7 +1983,7 @@ function GameDetailPage() {
                     <span className="badge">NEWS</span>
                     {a.date && <time className="micro" dateTime={a.date}>{timeAgo(a.date)}</time>}
                   </div>
-                  <h2 className="article-title"><a href={url}>{a.title}</a></h2>
+                  <h2 className="article-title"><a href={url}>{decodeEntities(a.title)}</a></h2>
                 </div>
               </article>
             );
@@ -2013,10 +2122,10 @@ function WeeklyDigestPage() {
                   <a key={i} href={url}
                     style={{ display: "flex", gap: 14, padding: 14, background: "var(--panel)", border: "1px solid var(--ring)", borderRadius: 12, textDecoration: "none", color: "var(--text)", alignItems: "flex-start" }}>
                     {a.image && (
-                      <img src={a.image} alt={a.title} style={{ width: 80, height: 52, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} loading="lazy" />
+                      <img src={a.image} alt={decodeEntities(a.title)} style={{ width: 80, height: 52, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} loading="lazy" />
                     )}
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.4 }}>{a.title}</div>
+                      <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.4 }}>{decodeEntities(a.title)}</div>
                       {a.date && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{timeAgo(a.date)}</div>}
                     </div>
                   </a>
