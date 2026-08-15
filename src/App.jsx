@@ -131,6 +131,8 @@ function RootLayout() {
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/user/:username"  element={<UserProfilePage />} />
           <Route path="/settings"        element={<SettingsPage />} />
+          <Route path="/movies"          element={<MoviesPage />} />
+          <Route path="/movies/admin"    element={<MovieAdminPage />} />
           <Route path="*"               element={<NotFound />} />
         </Routes>
       </main>
@@ -227,7 +229,7 @@ function Header() {
         <div className="nav-inner">
           <NavLink to="/" className="logo" onClick={() => setOpen(false)}>
             <img
-              src="/important_stuff_v2.png"
+              src="/important_stuff.png"
               alt="GMN News"
               className="logo-img"
               width="38"
@@ -248,6 +250,7 @@ function Header() {
             <NavLink to="/videos">Videos</NavLink>
             <NavLink to="/digest">Digest</NavLink>
             <NavLink to="/reviews">Reviews</NavLink>
+            <NavLink to="/movies">Movies</NavLink>
             <NavLink to="/tech">GMN Tech</NavLink>
           </div>
 
@@ -670,6 +673,9 @@ function HomePage() {
               <div style={{ padding: 16, fontSize: 13, color: "var(--muted)" }}>Score unavailable</div>
             )}
           </div>
+
+          {/* GMN Movie Ratings Widget */}
+          <MovieRatingsSidebar apiOrigin={API_ORIGIN} />
 
           {/* Rising This Week — from chart trend data */}
           <div className="side-card">
@@ -2697,6 +2703,435 @@ function SubmitReviewPage() {
           {submitting ? "Posting…" : "Post Review →"}
         </button>
       </form>
+    </div>
+  );
+}
+
+
+/* ─────────────────────────────────────────
+   SCORE HELPERS
+───────────────────────────────────────── */
+function scoreLabel(s) {
+  if (s === null || s === undefined) return "NR";
+  if (s >= 90) return "EXCEPTIONAL";
+  if (s >= 80) return "GREAT";
+  if (s >= 70) return "GOOD";
+  if (s >= 60) return "MIXED";
+  return "POOR";
+}
+function scoreColor(s) {
+  if (s === null || s === undefined) return "var(--muted)";
+  if (s >= 90) return "var(--green)";
+  if (s >= 80) return "var(--gold)";
+  if (s >= 70) return "var(--blue)";
+  if (s >= 60) return "var(--muted2)";
+  return "var(--red)";
+}
+
+/* ─────────────────────────────────────────
+   MOVIE RATINGS SIDEBAR WIDGET
+───────────────────────────────────────── */
+function MovieRatingsSidebar({ apiOrigin }) {
+  const [movies, setMovies] = useState([]);
+
+  useEffect(() => {
+    fetch(`${apiOrigin}/api/movies`)
+      .then(r => r.json())
+      .then(d => setMovies(Array.isArray(d) ? d.slice(0, 4) : []))
+      .catch(() => {});
+  }, [apiOrigin]);
+
+  if (movies.length === 0) return null;
+
+  return (
+    <div className="side-card">
+      <div className="side-card-header">
+        <span className="side-dot" style={{ background: "var(--purple)" }} />
+        GMN Movie Ratings
+      </div>
+      <div style={{ padding: "8px 0" }}>
+        {movies.map(m => (
+          <Link to="/movies" key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderBottom: "1px solid var(--ring)", textDecoration: "none", color: "var(--text)", transition: "background .12s" }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.03)"}
+            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+          >
+            {m.cover_url
+              ? <img src={m.cover_url} alt={m.title} style={{ width: 32, height: 46, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
+              : <div style={{ width: 32, height: 46, background: "var(--panel2)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>🎬</div>
+            }
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.title}</div>
+              {m.year && <div style={{ fontSize: 10, color: "var(--muted)" }}>{m.year}</div>}
+            </div>
+            {m.critic_score !== null && (
+              <div style={{ textAlign: "center", flexShrink: 0 }}>
+                <div style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 900, color: scoreColor(m.critic_score), lineHeight: 1 }}>{m.critic_score}</div>
+                <div style={{ fontSize: 8, color: scoreColor(m.critic_score), fontWeight: 700 }}>GMN</div>
+              </div>
+            )}
+          </Link>
+        ))}
+        <Link to="/movies" style={{ display: "block", padding: "10px 16px", fontSize: 12, fontWeight: 700, color: "var(--red)", textDecoration: "none" }}>
+          View All Ratings →
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────
+   MOVIES PAGE
+───────────────────────────────────────── */
+function MoviesPage() {
+  const API_ORIGIN = useApiOrigin();
+  const { user }  = useAuth();
+  const [movies,  setMovies]  = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tab,     setTab]     = useState("all"); // all | games | movies
+
+  const isAdmin = user?.id === "f2f0e76e-4463-47b0-916f-3cbd6de5d75a";
+
+  useEffect(() => {
+    fetch(`${API_ORIGIN}/api/movies`)
+      .then(r => r.json())
+      .then(d => { setMovies(Array.isArray(d) ? d : []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [API_ORIGIN]);
+
+  return (
+    <div style={{ maxWidth: 960, margin: "0 auto", padding: "32px 20px 60px" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 24 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--red)", letterSpacing: "1.2px", marginBottom: 6 }}>GMN RATINGS</div>
+          <h1 style={{ fontFamily: "var(--font-display)", fontSize: "clamp(28px,5vw,42px)", fontWeight: 900, textTransform: "uppercase", margin: 0 }}>
+            Movie Ratings
+          </h1>
+        </div>
+        {isAdmin && (
+          <Link to="/movies/admin" style={{
+            padding: "8px 18px", borderRadius: 10, background: "var(--red)",
+            color: "#fff", fontWeight: 700, fontSize: 13, textDecoration: "none",
+          }}>+ Add Movie</Link>
+        )}
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+        {["all", "movies"].map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`chip ${tab === t ? "is-active" : ""}`}
+            style={{ fontSize: 13 }}>
+            {t === "all" ? "All" : "Movies"}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px,1fr))", gap: 16 }}>
+          {[1,2,3,4,5,6].map(i => (
+            <div key={i} className="skeleton-box" style={{ height: 320, borderRadius: 14 }} />
+          ))}
+        </div>
+      ) : movies.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "60px 20px" }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>🎬</div>
+          <p style={{ color: "var(--muted2)", marginBottom: 8, fontWeight: 700, fontSize: 16 }}>No movies rated yet</p>
+          {isAdmin && (
+            <Link to="/movies/admin" className="btn-primary" style={{ marginTop: 8 }}>Add the First Movie</Link>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px,1fr))", gap: 16 }}>
+          {movies.map(m => (
+            <MovieCard key={m.id} movie={m} onRate={(id, score) => {
+              // Optimistically update community score
+              setMovies(prev => prev.map(mv => {
+                if (mv.id !== id) return mv;
+                const total = mv.community_score ? Math.round(mv.community_score / 10 * mv.rating_count) : 0;
+                const newCount = mv.rating_count + 1;
+                const newScore = Math.round((total + score) / newCount * 10);
+                return { ...mv, community_score: newScore, rating_count: newCount };
+              }));
+            }} isAdmin={isAdmin} onDelete={(id) => setMovies(prev => prev.filter(mv => mv.id !== id))} apiOrigin={API_ORIGIN} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────
+   MOVIE CARD
+───────────────────────────────────────── */
+function MovieCard({ movie: m, onRate, isAdmin, onDelete, apiOrigin }) {
+  const { user } = useAuth();
+  const [showRate, setShowRate] = useState(false);
+  const [hoverScore, setHoverScore] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+  const [userRating, setUserRating] = useState(null);
+
+  async function submitRating(score) {
+    if (!user) return;
+    setSubmitting(true);
+    try {
+      await fetch(`${apiOrigin}/api/movies/${m.id}/rate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: user.id, score }),
+      });
+      setUserRating(score);
+      onRate(m.id, score);
+      setShowRate(false);
+    } catch {} finally { setSubmitting(false); }
+  }
+
+  async function deleteMovie() {
+    if (!window.confirm(`Delete "${m.title}"?`)) return;
+    await fetch(`${apiOrigin}/api/movies/${m.id}`, { method: "DELETE" });
+    onDelete(m.id);
+  }
+
+  return (
+    <div style={{ background: "var(--panel)", border: "1px solid var(--ring)", borderRadius: 14, overflow: "hidden", position: "relative", transition: "border-color .15s" }}
+      onMouseEnter={e => e.currentTarget.style.borderColor = "var(--ring-md)"}
+      onMouseLeave={e => e.currentTarget.style.borderColor = "var(--ring)"}
+    >
+      {/* Cover */}
+      <div style={{ position: "relative" }}>
+        {m.cover_url
+          ? <img src={m.cover_url} alt={m.title} style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", display: "block" }} />
+          : <div style={{ width: "100%", aspectRatio: "2/3", background: "var(--panel2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 48 }}>🎬</div>
+        }
+        {/* Critic score badge */}
+        {m.critic_score !== null && (
+          <div style={{
+            position: "absolute", bottom: 8, left: 8,
+            background: "rgba(0,0,0,0.85)", borderRadius: 8,
+            padding: "4px 8px", display: "flex", flexDirection: "column", alignItems: "center",
+          }}>
+            <span style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 900, color: scoreColor(m.critic_score), lineHeight: 1 }}>{m.critic_score}</span>
+            <span style={{ fontSize: 8, fontWeight: 800, color: scoreColor(m.critic_score), letterSpacing: "0.4px" }}>GMN</span>
+          </div>
+        )}
+        {/* Admin delete */}
+        {isAdmin && (
+          <button onClick={deleteMovie} style={{
+            position: "absolute", top: 6, right: 6,
+            width: 24, height: 24, borderRadius: "50%",
+            background: "rgba(0,0,0,0.75)", border: "none",
+            color: "#fff", fontSize: 12, cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>✕</button>
+        )}
+      </div>
+
+      {/* Info */}
+      <div style={{ padding: "10px 12px 12px" }}>
+        <div style={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3, marginBottom: 4 }}>{m.title}</div>
+        {m.year && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>{m.year}</div>}
+
+        {/* Scores row */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          {m.critic_score !== null && (
+            <div style={{ flex: 1, background: "var(--panel2)", borderRadius: 8, padding: "6px 8px", textAlign: "center" }}>
+              <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 700, letterSpacing: "0.4px", marginBottom: 2 }}>GMN CRITIC</div>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 900, color: scoreColor(m.critic_score), lineHeight: 1 }}>{m.critic_score}</div>
+              <div style={{ fontSize: 8, color: scoreColor(m.critic_score), fontWeight: 700 }}>{scoreLabel(m.critic_score)}</div>
+            </div>
+          )}
+          {m.community_score !== null && (
+            <div style={{ flex: 1, background: "var(--panel2)", borderRadius: 8, padding: "6px 8px", textAlign: "center" }}>
+              <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 700, letterSpacing: "0.4px", marginBottom: 2 }}>COMMUNITY</div>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 900, color: scoreColor(m.community_score), lineHeight: 1 }}>{m.community_score}</div>
+              <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600 }}>{m.rating_count} ratings</div>
+            </div>
+          )}
+        </div>
+
+        {/* Rate button */}
+        {user && (
+          showRate ? (
+            <div>
+              <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, fontWeight: 700 }}>YOUR RATING (1-10)</div>
+              <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                {[1,2,3,4,5,6,7,8,9,10].map(n => (
+                  <button key={n} onClick={() => submitRating(n)} disabled={submitting}
+                    onMouseEnter={() => setHoverScore(n)}
+                    onMouseLeave={() => setHoverScore(0)}
+                    style={{
+                      width: 22, height: 22, borderRadius: 4, border: "1px solid",
+                      borderColor: n <= (hoverScore || userRating || 0) ? "var(--gold)" : "var(--ring-md)",
+                      background: n <= (hoverScore || userRating || 0) ? "var(--gold-dim)" : "transparent",
+                      color: n <= (hoverScore || userRating || 0) ? "var(--gold)" : "var(--muted)",
+                      fontSize: 10, fontWeight: 700, cursor: "pointer",
+                    }}>{n}</button>
+                ))}
+              </div>
+              <button onClick={() => setShowRate(false)} style={{ fontSize: 10, color: "var(--muted)", background: "none", border: "none", cursor: "pointer", marginTop: 4, padding: 0 }}>Cancel</button>
+            </div>
+          ) : (
+            <button onClick={() => setShowRate(true)} style={{
+              width: "100%", padding: "6px", borderRadius: 8,
+              background: "transparent", border: "1px solid var(--ring-md)",
+              color: "var(--muted2)", fontSize: 11, fontWeight: 700, cursor: "pointer",
+              transition: ".15s",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--gold)"; e.currentTarget.style.color = "var(--gold)"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--ring-md)"; e.currentTarget.style.color = "var(--muted2)"; }}
+            >
+              {userRating ? `⭐ Your rating: ${userRating}/10` : "⭐ Rate this"}
+            </button>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────
+   MOVIE ADMIN PAGE
+───────────────────────────────────────── */
+function MovieAdminPage() {
+  const API_ORIGIN = useApiOrigin();
+  const { user }  = useAuth();
+  const navigate   = useNavigate();
+  const isAdmin    = user?.id === "f2f0e76e-4463-47b0-916f-3cbd6de5d75a";
+
+  const [query,       setQuery]       = useState("");
+  const [results,     setResults]     = useState([]);
+  const [searching,   setSearching]   = useState(false);
+  const [selected,    setSelected]    = useState(null);
+  const [criticScore, setCriticScore] = useState(80);
+  const [criticBlurb, setCriticBlurb] = useState("");
+  const [saving,      setSaving]      = useState(false);
+  const [saved,       setSaved]       = useState(false);
+
+  useEffect(() => { if (!isAdmin) navigate("/movies"); }, [isAdmin]);
+
+  async function searchMovies(q) {
+    if (!q.trim()) { setResults([]); return; }
+    setSearching(true);
+    try {
+      const r = await fetch(`${API_ORIGIN}/api/movies/search?q=${encodeURIComponent(q)}`);
+      if (r.ok) setResults(await r.json());
+    } catch {} finally { setSearching(false); }
+  }
+
+  async function saveMovie() {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      await fetch(`${API_ORIGIN}/api/movies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...selected,
+          critic_score: criticScore,
+          critic_blurb: criticBlurb || null,
+        }),
+      });
+      setSaved(true);
+      setTimeout(() => { setSaved(false); setSelected(null); setQuery(""); setResults([]); setCriticBlurb(""); setCriticScore(80); }, 2000);
+    } catch {} finally { setSaving(false); }
+  }
+
+  const label = s => s >= 90 ? "Exceptional" : s >= 80 ? "Great" : s >= 70 ? "Good" : s >= 60 ? "Mixed" : "Poor";
+  const inputStyle = { width: "100%", padding: "11px 14px", background: "var(--panel)", border: "1px solid var(--ring-md)", borderRadius: 10, color: "var(--text)", fontSize: 14, fontFamily: "inherit", outline: "none" };
+
+  return (
+    <div style={{ maxWidth: 680, margin: "0 auto", padding: "32px 20px 60px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 28 }}>
+        <Link to="/movies" style={{ color: "var(--muted)", fontSize: 13, fontWeight: 600, textDecoration: "none" }}>← Back</Link>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--red)", letterSpacing: "1.2px", marginBottom: 4 }}>ADMIN</div>
+          <h1 style={{ fontFamily: "var(--font-display)", fontSize: 32, fontWeight: 900, textTransform: "uppercase", margin: 0 }}>Add Movie Rating</h1>
+        </div>
+      </div>
+
+      {/* Movie search */}
+      <div style={{ marginBottom: 24 }}>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6, letterSpacing: "0.4px" }}>SEARCH MOVIE</label>
+        <input
+          value={query}
+          onChange={e => { setQuery(e.target.value); searchMovies(e.target.value); }}
+          placeholder="Search any movie... e.g. Arcane, The Last of Us"
+          style={inputStyle}
+          onFocus={e => e.target.style.borderColor = "var(--blue)"}
+          onBlur={e => e.target.style.borderColor = "var(--ring-md)"}
+        />
+        {searching && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>Searching...</div>}
+
+        {results.length > 0 && !selected && (
+          <div style={{ marginTop: 8, background: "var(--panel)", border: "1px solid var(--ring-md)", borderRadius: 10, overflow: "hidden" }}>
+            {results.map(m => (
+              <div key={m.tmdb_id} onClick={() => { setSelected(m); setResults([]); setQuery(m.title); }}
+                style={{ display: "flex", gap: 12, padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid var(--ring)", transition: "background .1s" }}
+                onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.04)"}
+                onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+              >
+                {m.cover_url && <img src={m.cover_url} alt={m.title} style={{ width: 36, height: 52, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />}
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{m.title}</div>
+                  {m.year && <div style={{ fontSize: 12, color: "var(--muted)" }}>{m.year}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Selected movie preview */}
+      {selected && (
+        <div style={{ display: "flex", gap: 14, padding: 16, background: "var(--panel)", border: "1px solid var(--ring)", borderRadius: 12, marginBottom: 24 }}>
+          {selected.cover_url && <img src={selected.cover_url} alt={selected.title} style={{ width: 60, height: 88, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />}
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 16 }}>{selected.title}</div>
+            {selected.year && <div style={{ fontSize: 12, color: "var(--muted)" }}>{selected.year}</div>}
+            <button onClick={() => { setSelected(null); setQuery(""); }} style={{ fontSize: 11, color: "var(--red)", background: "none", border: "none", cursor: "pointer", padding: 0, marginTop: 6 }}>
+              × Remove
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Critic score slider */}
+      {selected && (
+        <>
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", letterSpacing: "0.4px" }}>GMN CRITIC SCORE</label>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                <span style={{ fontFamily: "var(--font-display)", fontSize: 36, fontWeight: 900, color: scoreColor(criticScore), lineHeight: 1 }}>{criticScore}</span>
+                <span style={{ fontSize: 13, color: scoreColor(criticScore), fontWeight: 700 }}>— {label(criticScore)}</span>
+              </div>
+            </div>
+            <input type="range" min="0" max="100" value={criticScore}
+              onChange={e => setCriticScore(Number(e.target.value))}
+              style={{ width: "100%", accentColor: scoreColor(criticScore) }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 24 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6, letterSpacing: "0.4px" }}>CRITIC BLURB (optional)</label>
+            <textarea value={criticBlurb} onChange={e => setCriticBlurb(e.target.value)} rows={3}
+              placeholder="Short editorial take on the movie..."
+              style={{ ...inputStyle, resize: "vertical" }}
+              onFocus={e => e.target.style.borderColor = "var(--blue)"}
+              onBlur={e => e.target.style.borderColor = "var(--ring-md)"}
+            />
+          </div>
+
+          <button onClick={saveMovie} disabled={saving || saved} style={{
+            padding: "12px 28px", borderRadius: 10, background: saved ? "var(--green)" : "var(--red)",
+            border: "none", color: "#fff", fontWeight: 800, fontSize: 15,
+            cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.7 : 1,
+            fontFamily: "var(--font-display)", letterSpacing: "0.5px", textTransform: "uppercase",
+          }}>
+            {saved ? "✓ Saved!" : saving ? "Saving..." : "Save Movie Rating"}
+          </button>
+        </>
+      )}
     </div>
   );
 }
