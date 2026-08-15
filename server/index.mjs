@@ -1231,8 +1231,13 @@ app.get("/api/movies", async (req, res) => {
       .order("created_at", { ascending: false });
 
     const result = (movies || []).map(m => {
-      const criticScore = m.gmn_movie_critic_scores?.[0]?.score ?? null;
-      const criticBlurb = m.gmn_movie_critic_scores?.[0]?.blurb ?? null;
+      // gmn_movie_critic_scores.movie_id is UNIQUE, so Supabase embeds it
+      // as a single object (one-to-one), not an array — handle both shapes.
+      const criticRow = Array.isArray(m.gmn_movie_critic_scores)
+        ? m.gmn_movie_critic_scores[0]
+        : m.gmn_movie_critic_scores;
+      const criticScore = criticRow?.score ?? null;
+      const criticBlurb = criticRow?.blurb ?? null;
       const ratings     = m.gmn_movie_community_ratings || [];
       const communityScore = ratings.length
         ? Math.round(ratings.reduce((s, r) => s + r.score, 0) / ratings.length * 10)
@@ -1264,8 +1269,13 @@ app.get("/api/movies/:id", async (req, res) => {
       .eq("id", req.params.id)
       .single();
     if (!movie) return res.status(404).json({ error: "Not found" });
-    const criticScore    = movie.gmn_movie_critic_scores?.[0]?.score ?? null;
-    const criticBlurb    = movie.gmn_movie_critic_scores?.[0]?.blurb ?? null;
+    // gmn_movie_critic_scores.movie_id is UNIQUE, so Supabase embeds it
+    // as a single object (one-to-one), not an array — handle both shapes.
+    const criticRow       = Array.isArray(movie.gmn_movie_critic_scores)
+      ? movie.gmn_movie_critic_scores[0]
+      : movie.gmn_movie_critic_scores;
+    const criticScore    = criticRow?.score ?? null;
+    const criticBlurb    = criticRow?.blurb ?? null;
     const ratings        = movie.gmn_movie_community_ratings || [];
     const communityScore = ratings.length
       ? Math.round(ratings.reduce((s, r) => s + r.score, 0) / ratings.length * 10)
