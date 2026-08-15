@@ -229,7 +229,7 @@ function Header() {
         <div className="nav-inner">
           <NavLink to="/" className="logo" onClick={() => setOpen(false)}>
             <img
-              src="/important_stuff_v2.png"
+              src="/important_stuff.png"
               alt="GMN News"
               className="logo-img"
               width="38"
@@ -3006,6 +3006,7 @@ function MovieAdminPage() {
   const [criticBlurb, setCriticBlurb] = useState("");
   const [saving,      setSaving]      = useState(false);
   const [saved,       setSaved]       = useState(false);
+  const [saveError,   setSaveError]   = useState(null);
 
   useEffect(() => { if (!isAdmin) navigate("/movies"); }, [isAdmin]);
 
@@ -3021,8 +3022,9 @@ function MovieAdminPage() {
   async function saveMovie() {
     if (!selected) return;
     setSaving(true);
+    setSaveError(null);
     try {
-      await fetch(`${API_ORIGIN}/api/movies`, {
+      const r = await fetch(`${API_ORIGIN}/api/movies`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3031,9 +3033,16 @@ function MovieAdminPage() {
           critic_blurb: criticBlurb || null,
         }),
       });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.error || `Save failed (${r.status})`);
+      }
       setSaved(true);
       setTimeout(() => { setSaved(false); setSelected(null); setQuery(""); setResults([]); setCriticBlurb(""); setCriticScore(80); }, 2000);
-    } catch {} finally { setSaving(false); }
+    } catch (e) {
+      console.error("Failed to save movie/critic score:", e);
+      setSaveError(e.message || "Save failed. Check the console for details.");
+    } finally { setSaving(false); }
   }
 
   const label = s => s >= 90 ? "Exceptional" : s >= 80 ? "Great" : s >= 70 ? "Good" : s >= 60 ? "Mixed" : "Poor";
@@ -3130,6 +3139,11 @@ function MovieAdminPage() {
           }}>
             {saved ? "✓ Saved!" : saving ? "Saving..." : "Save Movie Rating"}
           </button>
+          {saveError && (
+            <div style={{ marginTop: 10, fontSize: 13, color: "var(--red)", fontWeight: 600 }}>
+              ⚠ {saveError}
+            </div>
+          )}
         </>
       )}
     </div>
