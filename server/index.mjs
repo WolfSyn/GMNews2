@@ -33,6 +33,7 @@ const YT_PLAYLIST_ID      = process.env.YT_PLAYLIST_ID || "PLgbyvoUvIMf9Jz3j-Jvp
 const TWITCH_CLIENT_ID    = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
 const STEAM_API_KEY       = process.env.STEAM_API_KEY;
+const TMDB_API_KEY        = process.env.TMDB_API_KEY;
 
 // ─────────────────────────────────────────────────────────────
 //  RSS FEED SOURCES
@@ -1189,12 +1190,165 @@ async function archiveArticles() {
 }
 
 const PORT = Number(process.env.PORT) || 3000;
+// ─────────────────────────────────────────────────────────────
+//  TMDB MOVIE SEARCH
+// ─────────────────────────────────────────────────────────────
+app.get("/api/movies/search", async (req, res) => {
+  const q = (req.query.q || "").trim();
+  if (!q) return res.json([]);
+  try {
+    const r = await fetch(
+      `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(q)}&language=en-US&page=1`
+    );
+    if (!r.ok) throw new Error(`TMDB ${r.status}`);
+    const data = await r.json();
+    const results = (data.results || []).slice(0, 8).map(m => ({
+      tmdb_id:     m.id,
+      title:       m.title,
+      year:        m.release_date ? new Date(m.release_date).getFullYear() : null,
+      cover_url:   m.poster_path ? `https://image.tmdb.org/t/p/w342${m.poster_path}` : null,
+      description: m.overview || null,
+      genre:       null,
+    }));
+    res.json(results);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  MOVIE RATINGS — GET all movies with scores
+// ─────────────────────────────────────────────────────────────
+app.get("/api/movies", async (req, res) => {
+  try {
+    const { data: movies } = await supabase
+      .from("gmn_movies")
+      .select(`
+        *,
+        gmn_movie_critic_scores(score, blurb),
+        gmn_movie_community_ratings(score)
+      `)
+      .order("created_at", { ascending: false });
+
+    const result = (movies || []).map(m => {
+      const criticScore = m.gmn_movie_critic_scores?.[0]?.score ?? null;
+      const criticBlurb = m.gmn_movie_critic_scores?.[0]?.blurb ?? null;
+      const ratings     = m.gmn_movie_community_ratings || [];
+      const communityScore = ratings.length
+        ? Math.round(ratings.reduce((s, r) => s + r.score, 0) / ratings.length * 10)
+        : null;
+      return {
+        ...m,
+        critic_score:    criticScore,
+        critic_blurb:    criticBlurb,
+        community_score: communityScore,
+        rating_count:    ratings.length,
+        gmn_movie_critic_scores:    undefined,
+        gmn_movie_community_ratings: undefined,
+      };
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  MOVIE RATINGS — GET single movie
+// ─────────────────────────────────────────────────────────────
+app.get("/api/movies/:id", async (req, res) => {
+  try {
+    const { data: movie } = await supabase
+      .from("gmn_movies")
+      .select(`*, gmn_movie_critic_scores(score, blurb), gmn_movie_community_ratings(score, user_id)`)
+      .eq("id", req.params.id)
+      .single();
+    if (!movie) return res.status(404).json({ error: "Not found" });
+    const criticScore    = movie.gmn_movie_critic_scores?.[0]?.score ?? null;
+    const criticBlurb    = movie.gmn_movie_critic_scores?.[0]?.blurb ?? null;
+    const ratings        = movie.gmn_movie_community_ratings || [];
+    const communityScore = ratings.length
+      ? Math.round(ratings.reduce((s, r) => s + r.score, 0) / ratings.length * 10)
+      : null;
+    res.json({
+      ...movie,
+      critic_score:    criticScore,
+      critic_blurb:    criticBlurb,
+      community_score: communityScore,
+      rating_count:    ratings.length,
+      user_ratings:    ratings.map(r => ({ user_id: r.user_id, score: r.score })),
+      gmn_movie_critic_scores:     undefined,
+      gmn_movie_community_ratings: undefined,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  MOVIE RATINGS — Admin: add movie + set critic score
+// ─────────────────────────────────────────────────────────────
+app.post("/api/movies", async (req, res) => {
+  const { tmdb_id, title, cover_url, year, description, genre, director, critic_score, critic_blurb } = req.body;
+  if (!title) return res.status(400).json({ error: "title required" });
+  try {
+    // Upsert movie
+    const { data: movie, error: mErr } = await supabase
+      .from("gmn_movies")
+      .upsert({ tmdb_id, title, cover_url, year, description, genre, director }, { onConflict: "tmdb_id" })
+      .select().single();
+    if (mErr) throw mErr;
+    // Set critic score if provided
+    if (critic_score !== undefined && critic_score !== null) {
+      const { error: sErr } = await supabase
+        .from("gmn_movie_critic_scores")
+        .upsert({ movie_id: movie.id, score: critic_score, blurb: critic_blurb || null }, { onConflict: "movie_id" });
+      if (sErr) throw sErr;
+    }
+    res.json({ success: true, movie });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  MOVIE RATINGS — Community: submit/update rating
+// ─────────────────────────────────────────────────────────────
+app.post("/api/movies/:id/rate", async (req, res) => {
+  const { user_id, score } = req.body;
+  if (!user_id || !score) return res.status(400).json({ error: "user_id and score required" });
+  if (score < 1 || score > 10) return res.status(400).json({ error: "score must be 1-10" });
+  try {
+    const { error } = await supabase
+      .from("gmn_movie_community_ratings")
+      .upsert({ movie_id: req.params.id, user_id, score }, { onConflict: "movie_id,user_id" });
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  MOVIE RATINGS — Admin: delete movie
+// ─────────────────────────────────────────────────────────────
+app.delete("/api/movies/:id", async (req, res) => {
+  try {
+    const { error } = await supabase.from("gmn_movies").delete().eq("id", req.params.id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, "0.0.0.0", async () => {
   console.log(`\n🎮 GMN News API v3 → http://localhost:${PORT}`);
   console.log(`   Twitch:   ${TWITCH_CLIENT_ID            ? "✅ key found" : "❌ MISSING"}`);
   console.log(`   Steam:    ${STEAM_API_KEY               ? "✅ key found" : "❌ MISSING"}`);
   console.log(`   YouTube:  ${YT_API_KEY                  ? "✅ key found" : "❌ MISSING"}`);
   console.log(`   Supabase: ${process.env.SUPABASE_SERVICE_KEY ? "✅ key found" : "❌ MISSING"}`);
+  console.log(`   TMDB:     ${TMDB_API_KEY                 ? "✅ key found" : "❌ MISSING"}`);
   console.log(`   News:     ✅ RSS feeds (12 sources)\n`);
 
   // Archive articles on startup then every 30 minutes
