@@ -319,6 +319,8 @@ function Footer() {
     <footer>
       <div className="footer-inner">
         <p>
+          <Link to="/about">About</Link>
+          {" · "}
           <Link to="/privacy">Privacy Policy</Link>
           {" · "}
           <Link to="/support">Support</Link>
@@ -1451,23 +1453,97 @@ function BlogPage() {
    ABOUT
 ───────────────────────────────────────── */
 function AboutPage() {
+  const stats = [
+    { label: "Games Tracked",   value: "50+" },
+    { label: "News Sources",    value: "5" },
+    { label: "Movies Rated",    value: "Growing" },
+    { label: "Updated",         value: "Live" },
+  ];
+
   return (
     <div className="about-page">
+      {/* Hero */}
       <section className="page-hero">
-        <h1>Welcome to GMN News</h1>
-        <p>The Billboard of Gaming — always know what's being played right now.</p>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--red)", letterSpacing: "1.2px", marginBottom: 10 }}>
+          THE BILLBOARD OF GAMING
+        </div>
+        <h1>About GMN News</h1>
+        <p>
+          We built GMN News because gaming deserved its own Billboard chart —
+          a place where you can see what's actually being played, watched, and talked about, right now.
+        </p>
       </section>
+
+      {/* Stats bar */}
+      <div style={{ maxWidth: 900, margin: "0 auto 40px", padding: "0 20px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        {stats.map(s => (
+          <div key={s.label} className="card" style={{ padding: "16px 12px", textAlign: "center" }}>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 900, color: "var(--red)" }}>{s.value}</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4, fontWeight: 600, letterSpacing: "0.3px", textTransform: "uppercase" }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Mission */}
+      <section style={{ maxWidth: 760, margin: "0 auto 48px", padding: "0 20px" }}>
+        <div className="card" style={{ padding: "28px 32px", borderLeft: "3px solid var(--red)" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--red)", letterSpacing: "1.2px", marginBottom: 10 }}>
+            OUR MISSION
+          </div>
+          <p style={{ color: "var(--text)", fontSize: 17, lineHeight: 1.7, margin: 0, fontFamily: "var(--font-display)", fontWeight: 700, letterSpacing: "0.2px" }}>
+            To give every gamer one honest place to see what's actually happening
+            in gaming right now — live, unfiltered, and free of the fluff.
+          </p>
+          <p style={{ color: "var(--muted2)", fontSize: 14, lineHeight: 1.7, marginTop: 14, marginBottom: 0 }}>
+            No recycled press releases. No pay-to-rank charts. Just real data — Twitch,
+            Steam, and IGDB — turned into a scoreboard the community can trust, plus a
+            space to review, discuss, and rate the games and movies that matter to you.
+          </p>
+        </div>
+      </section>
+
+      {/* Story */}
+      <section style={{ maxWidth: 760, margin: "0 auto 48px", padding: "0 20px" }}>
+        <h2 style={{ fontSize: 22, marginBottom: 14 }}>Why GMN News exists</h2>
+        <p style={{ color: "var(--muted2)", fontSize: 15, lineHeight: 1.8, marginBottom: 16 }}>
+          Every other gaming site tells you what happened. We built GMN News to show you what's
+          happening — live Twitch viewer counts, Steam player numbers, and IGDB data, all pulled
+          together into one chart: the <strong style={{ color: "var(--text)" }}>GMN Hot 50</strong>.
+        </p>
+        <p style={{ color: "var(--muted2)", fontSize: 15, lineHeight: 1.8 }}>
+          On top of that we're building a real community — reviews, comments, followed games,
+          and now GMN Ratings for movies — so gamers have one place to track, discuss, and rate
+          the games and shows they care about.
+        </p>
+      </section>
+
+      {/* Feature cards */}
       <section className="about-content">
         {[
-          ["🎯 Our Mission",    "From breaking news and patch notes to in-depth reviews and dev insights, GMN keeps you ahead of the curve."],
-          ["🏆 Our Charts",     "The GMN Hot 50 ranks the most-played, most-streamed, and most-talked-about games every month — the Billboard of Gaming."],
-          ["🚀 Our Promise",    "Fast. Reliable. Original. No fluff — just signal. GMN scores, original takes, and data you won't find anywhere else."],
+          ["🏆 GMN Hot 50", "Live rankings of the most-watched, most-played games — powered by real Twitch, Steam, and IGDB data, updated continuously."],
+          ["⭐ GMN Score", "Our monthly editorial pick, scored across critics, players, and our own GMN take — no fluff, just signal."],
+          ["🎬 GMN Ratings", "Critic scores from our team plus real community ratings for movies and shows, side by side."],
+          ["💬 Community", "Write reviews, comment on articles, follow the games you care about, and build a profile that's yours."],
+          ["📱 GMN News App", "Everything from the website, now in your pocket — free on iOS."],
+          ["🚀 Always Live", "No stale rankings. Our charts pull fresh data around the clock so you always know what's actually trending."],
         ].map(([title, text]) => (
           <div className="card" key={title} style={{ padding: 22 }}>
             <h2 style={{ fontSize: 18, marginBottom: 8 }}>{title}</h2>
             <p style={{ color: "var(--muted2)", fontSize: 14 }}>{text}</p>
           </div>
         ))}
+      </section>
+
+      {/* CTA */}
+      <section style={{ maxWidth: 760, margin: "48px auto 0", padding: "0 20px 60px", textAlign: "center" }}>
+        <h2 style={{ fontSize: 20, marginBottom: 10 }}>Join the community</h2>
+        <p style={{ color: "var(--muted2)", fontSize: 14, marginBottom: 20 }}>
+          Create a free account to write reviews, follow games, and rate movies.
+        </p>
+        <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+          <a className="btn-primary" href="/signup">Create Free Account</a>
+          <a className="btn-ghost" href="/charts">See the Hot 50 →</a>
+        </div>
       </section>
     </div>
   );
