@@ -955,7 +955,7 @@ app.get("/api/charts/gmnscore", async (req, res) => {
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
-    const SCORE_GAME = "Marvel Tokon: Fighting Souls";
+    const SCORE_GAME = "Marvel's Wolverine";
     const r = await fetch("https://api.igdb.com/v4/games", {
       method: "POST",
       headers: twitchHeaders(token),
