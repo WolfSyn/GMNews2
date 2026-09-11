@@ -753,14 +753,15 @@ app.get("/api/charts", async (req, res) => {
     const igdbByName = {};
     for (const g of igdbGames) igdbByName[g.name?.toLowerCase()] = g;
 
-    const chartRows  = [];
-    let   prevRanks  = getCache("charts_prev_ranks") || {};
+    let prevRanks = getCache("charts_prev_ranks") || {};
 
-    for (let i = 0; i < twitchGames.length; i++) {
-      const tw   = twitchGames[i];
-      const rank = i + 1;
-      const name = tw.name;
-
+    // Build rows first WITHOUT assigning rank — we need actual computed
+    // viewer counts (viewersByGameId) before we can rank correctly.
+    // Twitch's top-games order does not always match the viewer totals
+    // we compute from the /streams call, which was causing rows to be
+    // out of numeric order (e.g. a 20K-viewer game ranked below a 15K one).
+    const unranked = twitchGames.map(tw => {
+      const name       = tw.name;
       const viewers    = viewersByGameId[tw.id] || 0;
       const igdb       = igdbByName[name.toLowerCase()] || null;
       const coverUrl   = igdb?.cover?.url
@@ -768,20 +769,11 @@ app.get("/api/charts", async (req, res) => {
         : null;
       const igdbRating = igdb?.rating ? Math.round(igdb.rating) : null;
       const steamCount = steamByName[name] ?? null;
-
-      const prevRank = prevRanks[name];
-      let trend, trendLabel;
-      if (!prevRank)            { trend = "new";  trendLabel = "NEW"; }
-      else if (rank < prevRank) { trend = "up";   trendLabel = `▲ ${prevRank - rank}`; }
-      else if (rank > prevRank) { trend = "down"; trendLabel = `▼ ${rank - prevRank}`; }
-      else                      { trend = "same"; trendLabel = "—"; }
-
       const twitchThumb = tw.box_art_url
         ? tw.box_art_url.replace("{width}", "120").replace("{height}", "160")
         : null;
 
-      chartRows.push({
-        rank,
+      return {
         name,
         twitchId:     tw.id,
         coverUrl:     coverUrl || twitchThumb,
@@ -790,13 +782,30 @@ app.get("/api/charts", async (req, res) => {
         steamPlayers: steamCount,
         steamLabel:   formatPlayerCount(steamCount),
         igdbRating,
+      };
+    });
+
+    // Sort strictly by live viewer count, descending — this IS the rank.
+    unranked.sort((a, b) => b.viewers - a.viewers);
+
+    const maxViewers = unranked[0]?.viewers || 1;
+    const chartRows = unranked.map((row, i) => {
+      const rank = i + 1;
+      const prevRank = prevRanks[row.name];
+      let trend, trendLabel;
+      if (!prevRank)            { trend = "new";  trendLabel = "NEW"; }
+      else if (rank < prevRank) { trend = "up";   trendLabel = `▲ ${prevRank - rank}`; }
+      else if (rank > prevRank) { trend = "down"; trendLabel = `▼ ${rank - prevRank}`; }
+      else                      { trend = "same"; trendLabel = "—"; }
+
+      return {
+        rank,
+        ...row,
         trend,
         trendLabel,
-        barPct: twitchGames[0] && viewers
-          ? Math.round((viewers / (viewersByGameId[twitchGames[0].id] || viewers || 1)) * 100)
-          : 0,
-      });
-    }
+        barPct: row.viewers ? Math.round((row.viewers / maxViewers) * 100) : 0,
+      };
+    });
 
     const newRanks = {};
     for (const row of chartRows) newRanks[row.name] = row.rank;
