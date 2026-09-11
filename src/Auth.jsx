@@ -269,7 +269,7 @@ function AuthCard({ children, title, subtitle }) {
         {/* Logo */}
         <div style={{ textAlign: "center", marginBottom: 32 }}>
           <Link to="/" style={{ display: "inline-flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
-            <img src="/important_stuff.png" alt="GMN" style={{ height: 36 }} />
+            <img src="/important_stuff_v2.png" alt="GMN" style={{ height: 36 }} />
             <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 22, fontWeight: 900, letterSpacing: "0.5px", textTransform: "uppercase", color: "#edf0f6" }}>
               GMN News
             </span>
