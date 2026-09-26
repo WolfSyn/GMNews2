@@ -1,0 +1,104 @@
+========================================================
+GMN NEWS — LOCAL DEV SETUP REQUIREMENTS
+========================================================
+Keep this file somewhere safe (not just on the machine
+you're about to reset). It has everything needed to get
+GMNews2 running again from scratch.
+
+--------------------------------------------------------
+1) SOFTWARE TO INSTALL FIRST
+--------------------------------------------------------
+- Node.js (LTS version)   -> https://nodejs.org
+  (installs both `node` and `npm`)
+- Git                      -> https://git-scm.com
+- VS Code                  -> https://code.visualstudio.com
+
+Verify install by running in a terminal:
+  node -v
+  npm -v
+  git -v
+
+--------------------------------------------------------
+2) CLONE THE REPO
+--------------------------------------------------------
+git clone https://github.com/WolfSyn/GMNews2.git
+cd GMNews2
+
+--------------------------------------------------------
+3) INSTALL PROJECT DEPENDENCIES
+--------------------------------------------------------
+This project uses Node/npm, NOT Python — so there is no
+requirements.txt. All dependencies are listed in
+package.json (already in the repo). Just run:
+
+  npm install
+
+This installs: React, React Router, Vite, Express, cors,
+dotenv, @supabase/supabase-js, node-fetch, sanitize-html,
+@mozilla/readability, jsdom, nodemon, concurrently, ESLint,
+and everything else package.json lists.
+
+--------------------------------------------------------
+4) RECREATE THE .env FILE  (NOT stored on GitHub!)
+--------------------------------------------------------
+Create a new file named exactly:  .env
+Place it in the ROOT of the GMNews2 folder (same level as
+package.json). Paste this content exactly:
+
+GAMESPOT_API_KEY=93b1c0cfd2ecca30289fb1ae6fe1d48c31069aec
+YT_API_KEY=AIzaSyASsA2tG0Ve6SeT2zfqV7gBEc_FUOq_Cws
+YT_PLAYLIST_ID=PLgbyvoUvIMf9Jz3j-JvpOW4CuXKB21Bis
+STEAM_API_KEY=2354AA4F2AC3FFE8C03632A77CE47DFC
+TWITCH_CLIENT_ID=b1mtm4yd9ickjl9b76i5kk8a2wwg1j
+TWITCH_CLIENT_SECRET=re5182djzy9jsoo84iggrk7iuhnywl
+TMDB_API_KEY=41b01b0b0611327bd469bbb681fc3cad
+VITE_SUPABASE_URL=https://dermkzudyiuzqkwwotfm.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRlcm1renVkeWl1enFrd3dvdGZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4MDU3NTUsImV4cCI6MjA5MDM4MTc1NX0.lhH5ulMQFqq2rkL6GOVyahDVgF_M2-EiJ7sAMgCnOaY
+VITE_API_BASE="http://localhost:3000"
+PORT=3000
+
+--------------------------------------------------------
+5) RUN THE DEV SERVER
+--------------------------------------------------------
+  npm run dev
+
+This runs BOTH the Vite frontend and the Express backend
+together (via `concurrently`). You should see:
+  CLIENT | Local: http://localhost:5173
+  SERVER | GMN News API v3 -> http://localhost:3000
+
+If you ever need to run them separately:
+  npm run dev:client     (Vite frontend only)
+  npm run dev:server     (Express backend only, via nodemon)
+
+--------------------------------------------------------
+6) PRODUCTION / DEPLOYMENT REFERENCE
+--------------------------------------------------------
+- Frontend hosted on:  Cloudflare Pages  -> gmnnews.org
+- Backend hosted on:   Render            -> gmnews2.onrender.com
+- Database/Auth:       Supabase          -> dermkzudyiuzqkwwotfm.supabase.co
+
+Render environment variables must match the .env values
+above (same keys, same values) EXCEPT do NOT add
+VITE_API_BASE on Render — the frontend defaults to
+gmnews2.onrender.com automatically in production.
+
+Supabase Authentication -> URL Configuration should have:
+  Site URL:       https://gmnnews.org
+  Redirect URLs:  https://gmnnews.org
+                  http://localhost:5173   (only while testing locally)
+
+--------------------------------------------------------
+7) IF SOMETHING WON'T START
+--------------------------------------------------------
+- "Cannot find module" errors -> re-run `npm install`
+- Blank page in browser        -> check browser console (F12)
+  for errors; usually a missing/incorrect .env value
+- Port 3000 already in use     -> close other terminals running
+  the server, or change PORT in .env
+- Supabase "supabaseUrl is required" -> .env is missing or in
+  the wrong folder (must be in project ROOT)
+
+========================================================
+END OF FILE
+========================================================
