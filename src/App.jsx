@@ -110,6 +110,7 @@ function RootLayout() {
       <AppBanner />
       <main>
         <ScrollToTop />
+        <AuthRouteMeta />
         <Routes>
           <Route path="/"               element={<HomePage />} />
           <Route path="/about"          element={<AboutPage />} />
@@ -141,6 +142,21 @@ function RootLayout() {
       <NewsletterPopup />
     </div>
   );
+}
+
+// Login, signup, settings and profile pages live in Auth.jsx, so their page
+// info is set here, by route.
+function AuthRouteMeta() {
+  const { pathname } = useLocation();
+  let meta = null;
+  if (pathname === "/login")                      meta = { title: "Log in",               noindex: true };
+  else if (pathname === "/signup")                meta = { title: "Create your account",  noindex: true };
+  else if (pathname === "/forgot-password")       meta = { title: "Reset your password",  noindex: true };
+  else if (pathname === "/settings")              meta = { title: "Account settings",     noindex: true };
+  else if (pathname.startsWith("/user/"))         meta = { title: `${decodeURIComponent(pathname.split("/")[2] || "Member")}'s profile`, noindex: true };
+  else if (pathname.startsWith("/movies/admin") || pathname.startsWith("/newsletter/admin")) meta = { title: "Admin", noindex: true };
+  usePageMeta({ ...(meta || {}), path: pathname, enabled: !!meta });
+  return null;
 }
 
 function ScrollToTop() {
@@ -181,6 +197,89 @@ function fetchJsonShared(url) {
   _inflight.set(url, p);
   return p;
 }
+
+// <seo-meta-start>
+const SITE_URL      = "https://gmnnews.org";
+const DEFAULT_TITLE = "GMN News: Most Watched Games Right Now, Live Hot 50 Chart";
+const DEFAULT_DESC  = "See what the world is playing and watching right now. The GMN Hot 50 ranks games by live Twitch viewers and Steam players, with GMN Scores, reviews and news.";
+const DEFAULT_IMAGE = `${SITE_URL}/og-default.png`;
+const X_HANDLE      = "@GMNNewsOfficial";
+
+// One place for every page's title + description (keep titles under ~60
+// characters and descriptions under ~160 so Google doesn't cut them off).
+const PAGE_META = {
+  home:     { path: "/",         title: DEFAULT_TITLE, description: DEFAULT_DESC },
+  charts:   { path: "/charts",   title: "Hot 50: Most Watched Games on Twitch Right Now",
+              description: "The full GMN Hot 50: the 50 most-watched games on Twitch right now, ranked by live viewers and enriched with Steam player counts. Updated continuously." },
+  articles: { path: "/articles", title: "Latest Gaming News",
+              description: "The latest gaming news from top outlets, gathered in one feed and updated through the day. Filter by PC, PlayStation, Xbox, Nintendo and mobile." },
+  videos:   { path: "/videos",   title: "Gaming Videos",
+              description: "Watch the latest gaming videos from GMN News." },
+  digest:   { path: "/digest",   title: "Weekly Gaming Digest: Top Games & Stories",
+              description: "This week in gaming: the top 3 games on the GMN Hot 50, what's rising, the GMN Score of the month and the biggest stories of the week." },
+  reviews:  { path: "/reviews",  title: "Player Reviews: Community Game Reviews",
+              description: "Honest game reviews from the GMN community, scored on gameplay, story and value. Filter by game and see what players rate highest." },
+  movies:   { path: "/movies",   title: "Movie Ratings: GMN Critic & Community Scores",
+              description: "GMN critic scores and community ratings for movies, side by side. Rate the movies you've watched and see how the community scores them." },
+  about:    { path: "/about",    title: "About GMN News: The Billboard of Gaming",
+              description: "GMN News tracks what the world is playing and watching right now. Learn about our mission, the GMN Hot 50, GMN Scores and our gaming community." },
+  support:  { path: "/support",  title: "Support & Feedback",
+              description: "Report a bug or send feedback to the GMN News team. We read everything." },
+  privacy:  { path: "/privacy",  title: "Privacy Policy",
+              description: "How GMN News collects, uses and protects your information, including accounts, newsletter signups and advertising." },
+  tech:     { path: "/tech",     title: "GMN Tech: Websites, Apps & AI Solutions",
+              description: "GMN Tech builds websites, mobile apps and AI solutions. See our services, process and pricing." },
+  // Pages that shouldn't appear in search results (no real content yet, or personal)
+  blog:     { path: "/blog",           title: "GMN Blog",        noindex: true },
+  search:   { path: "/search",         title: "Search GMN News", noindex: true },
+  submit:   { path: "/reviews/submit", title: "Write a Review",  noindex: true },
+  notFound: { title: "Page not found", noindex: true },
+};
+
+function setMeta(attr, key, value) {
+  let el = document.head.querySelector(`meta[${attr}="${key}"]`);
+  if (!el) { el = document.createElement("meta"); el.setAttribute(attr, key); document.head.appendChild(el); }
+  el.setAttribute("content", value);
+}
+function setCanonical(href) {
+  let el = document.head.querySelector('link[rel="canonical"]');
+  if (!el) { el = document.createElement("link"); el.setAttribute("rel", "canonical"); document.head.appendChild(el); }
+  el.setAttribute("href", href);
+}
+
+// Writes the page's title, description, canonical link, robots and share-preview
+// tags into <head>. Runs on every page so nothing from the previous page lingers.
+function applyPageMeta({ title, description, path, image, noindex, type } = {}) {
+  const fullTitle = title ? (/GMN News/i.test(title) ? title : `${title} | GMN News`) : DEFAULT_TITLE;
+  let   desc      = (description || DEFAULT_DESC).replace(/\s+/g, " ").trim();
+  if (desc.length > 160) desc = desc.slice(0, 157).trimEnd() + "…";
+  const url = SITE_URL + (path ?? window.location.pathname);
+  const img = image || DEFAULT_IMAGE;
+
+  document.title = fullTitle;
+  setMeta("name", "description", desc);
+  setMeta("name", "robots", noindex ? "noindex, follow" : "index, follow");
+  setCanonical(url);
+  setMeta("property", "og:site_name",   "GMN News");
+  setMeta("property", "og:type",        type || "website");
+  setMeta("property", "og:title",       fullTitle);
+  setMeta("property", "og:description", desc);
+  setMeta("property", "og:url",         url);
+  setMeta("property", "og:image",       img);
+  setMeta("name", "twitter:card",        "summary_large_image");
+  setMeta("name", "twitter:site",        X_HANDLE);
+  setMeta("name", "twitter:title",       fullTitle);
+  setMeta("name", "twitter:description", desc);
+  setMeta("name", "twitter:image",       img);
+}
+
+function usePageMeta({ title, description, path, image, noindex, type, enabled = true } = {}) {
+  useEffect(() => {
+    if (!enabled) return;
+    applyPageMeta({ title, description, path, image, noindex, type });
+  }, [enabled, title, description, path, image, noindex, type]);
+}
+// <seo-meta-end>
 
 function useApiBase() {
   return useMemo(() => {
@@ -671,6 +770,7 @@ function MiniSkeleton({ rows = 5 }) {
 }
 
 function HomePage() {
+  usePageMeta(PAGE_META.home);
   const API_BASE   = useApiBase();
   const API_ORIGIN = useApiOrigin();
 
@@ -1166,6 +1266,7 @@ function timeAgo(iso) {
    ARTICLES PAGE
 ───────────────────────────────────────── */
 function ArticlesPage() {
+  usePageMeta(PAGE_META.articles);
   const API_BASE     = useApiBase();
   const REVIEWS_BASE = useReviewsBase();
   const loc          = useLocation();
@@ -1334,45 +1435,19 @@ function ArticleDetailPage() {
 
   const articleTitle = decodeEntities(data?.title || title);
 
-  // SEO meta tags — update document head dynamically
-  useEffect(() => {
-    if (!articleTitle) return;
-    // Title
-    document.title = `${articleTitle} | GMN News`;
-    // Meta description
-    let desc = document.querySelector('meta[name="description"]');
-    if (!desc) { desc = document.createElement("meta"); desc.name = "description"; document.head.appendChild(desc); }
-    desc.content = data?.excerpt || `${articleTitle} — Read on GMN News, the Billboard of Gaming.`;
-    // OG tags
-    const og = (prop, val) => {
-      let el = document.querySelector(`meta[property="${prop}"]`);
-      if (!el) { el = document.createElement("meta"); el.setAttribute("property", prop); document.head.appendChild(el); }
-      el.setAttribute("content", val);
-    };
-    og("og:title",       articleTitle);
-    og("og:description", data?.excerpt || `${articleTitle} — GMN News`);
-    og("og:image",       data?.leadImage || "https://gmnnews.org/images/favicon-32x32.png");
-    og("og:site_name",   "GMN News");
-    og("og:type",        "article");
-    // Twitter/X card
-    const tw = (name, val) => {
-      let el = document.querySelector(`meta[name="${name}"]`);
-      if (!el) { el = document.createElement("meta"); el.setAttribute("name", name); document.head.appendChild(el); }
-      el.setAttribute("content", val);
-    };
-    tw("twitter:card",        "summary_large_image");
-    tw("twitter:title",       articleTitle);
-    tw("twitter:description", data?.excerpt || `${articleTitle} — GMN News`);
-    tw("twitter:image",       data?.leadImage || "https://gmnnews.org/images/favicon-32x32.png");
-    tw("twitter:site",        "@GMN_News");
-    return () => { document.title = "GMN News"; };
-  }, [data]); // only run when data fully loads, not on every render
+  // Page title, description and share-preview tags (see usePageMeta above)
+  usePageMeta({
+    title: articleTitle,
+    description: decodeEntities(data?.excerpt) || `${articleTitle}: read the story and join the discussion on GMN News, the Billboard of Gaming.`,
+    image: data?.leadImage || undefined,
+    path: window.location.pathname + window.location.search,
+    type: "article",
+  });
 
   // Share functions
   const [copied, setCopied] = useState(false);
   function shareToX() {
-    const text = `${articleTitle} via @GMN_News`;
-    window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(window.location.href)}`, "_blank");
+    window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(articleTitle)}&url=${encodeURIComponent(window.location.href)}&via=GMNNewsOfficial`, "_blank");
   }
   function shareToReddit() {
     window.open(`https://reddit.com/submit?url=${encodeURIComponent(url)}&title=${encodeURIComponent(articleTitle)}`, "_blank");
@@ -1536,6 +1611,7 @@ function ArticleDetailPage() {
    VIDEOS PAGE
 ───────────────────────────────────────── */
 function VideosPage() {
+  usePageMeta(PAGE_META.videos);
   const API_ORIGIN = useApiOrigin();
   const [items, setItems]       = useState([]);
   const [nextCursor, setNext]   = useState(null);
@@ -1625,6 +1701,7 @@ function VideosPage() {
    TECH PAGE
 ───────────────────────────────────────── */
 function TechPage() {
+  usePageMeta(PAGE_META.tech);
   return (
     <div className="tech-page">
       <section className="page-hero">
@@ -1699,6 +1776,7 @@ function TechPage() {
    BLOG
 ───────────────────────────────────────── */
 function BlogPage() {
+  usePageMeta(PAGE_META.blog);
   return (
     <div className="blog-page">
       <section className="page-hero">
@@ -1726,6 +1804,7 @@ function BlogPage() {
    ABOUT
 ───────────────────────────────────────── */
 function AboutPage() {
+  usePageMeta(PAGE_META.about);
   const stats = [
     { label: "Games Tracked",   value: "50+" },
     { label: "News Sources",    value: "5" },
@@ -1826,6 +1905,7 @@ function AboutPage() {
    SUPPORT
 ───────────────────────────────────────── */
 function SupportPage() {
+  usePageMeta(PAGE_META.support);
   const loc = useLocation();
   const sent = new URLSearchParams(loc.search).get("sent") === "1";
   const redirectUrl = typeof window !== "undefined"
@@ -1895,6 +1975,7 @@ function SupportPage() {
    PRIVACY
 ───────────────────────────────────────── */
 function PrivacyPage() {
+  usePageMeta(PAGE_META.privacy);
   const s = { color: "var(--muted2)", lineHeight: 1.8, fontSize: 14 };
   const h = { color: "var(--text)", fontSize: 13, fontWeight: 700, letterSpacing: "0.4px", textTransform: "uppercase", marginBottom: 8, marginTop: 28 };
   return (
@@ -1977,6 +2058,7 @@ function PrivacyPage() {
    SEARCH PAGE  —  v2 (RSS + Top 200 Twitch + IGDB)
 ───────────────────────────────────────── */
 function SearchPage() {
+  usePageMeta(PAGE_META.search);
   const API_BASE   = useApiBase();
   const API_ORIGIN = useApiOrigin();
 
@@ -2222,6 +2304,16 @@ function GameDetailPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
+  usePageMeta({
+    title: `${gameName}: Live Stats & Latest News`,
+    description: game
+      ? `${gameName} is #${game.rank} on the GMN Hot 50 with ${game.viewersLabel} live viewers on Twitch. Live stats and the latest ${gameName} news.`
+      : `Latest ${gameName} news and live stats on GMN News, the Billboard of Gaming.`,
+    image: game?.coverUrl && game.coverUrl.startsWith("https://") ? game.coverUrl : undefined,
+    path: window.location.pathname,
+    noindex: !loading && !game && articles.length === 0,
+  });
+
   useEffect(() => {
     (async () => {
       try {
@@ -2356,6 +2448,7 @@ function GameDetailPage() {
    WEEKLY DIGEST PAGE
 ───────────────────────────────────────── */
 function WeeklyDigestPage() {
+  usePageMeta(PAGE_META.digest);
   const API_ORIGIN = useApiOrigin();
   const API_BASE   = useApiBase();
   const [chart,   setChart]   = useState([]);
@@ -2615,6 +2708,7 @@ function GameDropdown({ value, onChange, inputStyle }) {
    CHARTS PAGE — Full Hot 50
 ───────────────────────────────────────── */
 function ChartsPage() {
+  usePageMeta(PAGE_META.charts);
   const API_ORIGIN = useApiOrigin();
   const [chartData,    setChartData]    = useState(null);
   const [loading,      setLoading]      = useState(true);
@@ -2791,6 +2885,7 @@ function ChartsPage() {
    COMMUNITY REVIEWS PAGE
 ───────────────────────────────────────── */
 function CommunityReviewsPage() {
+  usePageMeta(PAGE_META.reviews);
   const [reviews, setReviews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortBy,  setSortBy]  = useState("recent");
@@ -2958,6 +3053,7 @@ function CommunityReviewsPage() {
    SUBMIT REVIEW PAGE  (saves to Supabase)
 ───────────────────────────────────────── */
 function SubmitReviewPage() {
+  usePageMeta(PAGE_META.submit);
   const { user, profile } = useAuth();
   const navigate = useNavigate();
   const [form, setForm]         = useState({ game: "", score: 80, body: "", gameplay: 80, story: 80, value: 80 });
@@ -3158,6 +3254,7 @@ function MovieRatingsSidebar({ apiOrigin }) {
    MOVIES PAGE
 ───────────────────────────────────────── */
 function MoviesPage() {
+  usePageMeta(PAGE_META.movies);
   const API_ORIGIN = useApiOrigin();
   const { user }  = useAuth();
   const [movies,  setMovies]  = useState([]);
@@ -3603,6 +3700,7 @@ function NewsletterAdminPage() {
    404
 ───────────────────────────────────────── */
 function NotFound() {
+  usePageMeta(PAGE_META.notFound);
   return (
     <div className="page-hero" style={{ textAlign: "center" }}>
       <h1>404</h1>
