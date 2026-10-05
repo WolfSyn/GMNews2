@@ -34,6 +34,8 @@ const TWITCH_CLIENT_ID    = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
 const STEAM_API_KEY       = process.env.STEAM_API_KEY;
 const TMDB_API_KEY        = process.env.TMDB_API_KEY;
+const BUTTONDOWN_API_KEY  = process.env.BUTTONDOWN_API_KEY;
+const BUTTONDOWN_BASE     = process.env.BUTTONDOWN_API_BASE || "https://api.buttondown.com/v1";
 
 // ─────────────────────────────────────────────────────────────
 //  RSS FEED SOURCES
@@ -1376,6 +1378,194 @@ app.delete("/api/movies/:id", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+//  NEWSLETTER (Buttondown)
+//  • POST /api/newsletter/subscribe — public signup form
+//  • POST /api/newsletter/draft     — admin only: builds this week's issue and
+//    saves it in Buttondown as a DRAFT. It never sends anything by itself.
+// ─────────────────────────────────────────────────────────────
+const NL_EMAIL_RE  = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const NL_ADMIN_IDS = ["f2f0e76e-4463-47b0-916f-3cbd6de5d75a"];
+const nlHits = new Map(); // ip -> recent attempt timestamps
+
+function nlRateLimited(ip) {
+  const now = Date.now(), windowMs = 10 * 60 * 1000, max = 6;
+  const recent = (nlHits.get(ip) || []).filter(t => now - t < windowMs);
+  recent.push(now);
+  nlHits.set(ip, recent);
+  if (nlHits.size > 5000) {
+    for (const [k, v] of nlHits) if (!v.some(t => now - t < windowMs)) nlHits.delete(k);
+  }
+  return recent.length > max;
+}
+
+// Resolve the logged-in user from the "Authorization: Bearer <token>" header
+async function nlAuthedUser(req) {
+  const h = req.headers.authorization || "";
+  const token = h.startsWith("Bearer ") ? h.slice(7) : null;
+  if (!token) return null;
+  try {
+    const { data, error } = await supabase.auth.getUser(token);
+    return error ? null : data.user;
+  } catch { return null; }
+}
+
+const bdHeaders = () => ({ Authorization: `Token ${BUTTONDOWN_API_KEY}`, "Content-Type": "application/json" });
+
+app.post("/api/newsletter/subscribe", async (req, res) => {
+  const { email, source, website } = req.body || {};
+  if (website) return res.json({ ok: true, confirmEmail: true });        // honeypot: pretend it worked
+
+  const clean = String(email || "").trim().toLowerCase();
+  if (!NL_EMAIL_RE.test(clean) || clean.length > 254) {
+    return res.status(400).json({ error: "Please enter a valid email address." });
+  }
+  const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+  if (nlRateLimited(ip)) {
+    return res.status(429).json({ error: "Too many attempts. Please try again in a few minutes." });
+  }
+
+  const src  = String(source || "unknown").replace(/[^a-z0-9_-]/gi, "").slice(0, 40) || "unknown";
+  const user = await nlAuthedUser(req);
+
+  // Our own backup copy of the list (a duplicate just means they're already saved)
+  const saveCopy = async () => {
+    try {
+      const { error } = await supabase.from("newsletter_subscribers")
+        .insert({ email: clean, source: src, user_id: user?.id || null });
+      if (error && error.code !== "23505") console.warn("newsletter backup copy failed:", error.message);
+    } catch (e) { console.warn("newsletter backup copy failed:", e.message); }
+  };
+
+  // Buttondown not connected yet: keep the address safe in Supabase
+  if (!BUTTONDOWN_API_KEY) {
+    await saveCopy();
+    return res.json({ ok: true, confirmEmail: false });
+  }
+
+  try {
+    // No "type" is sent, so Buttondown uses its default double opt-in
+    // (the subscriber gets a confirmation email before anything else).
+    const r = await fetch(`${BUTTONDOWN_BASE}/subscribers`, {
+      method: "POST",
+      headers: bdHeaders(),
+      body: JSON.stringify({ email_address: clean, metadata: { source: src, site: "gmnnews.org" } }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (r.ok) { await saveCopy(); return res.json({ ok: true, confirmEmail: true }); }
+
+    // Rejected. Most often that means "already subscribed", so look the address up.
+    const found = await fetch(`${BUTTONDOWN_BASE}/subscribers/${encodeURIComponent(clean)}`, {
+      headers: bdHeaders(),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (found.ok) { await saveCopy(); return res.json({ ok: true, confirmEmail: true }); }
+
+    const detail = (await r.text().catch(() => "")).slice(0, 300);
+    console.warn(`Buttondown rejected a subscriber (${r.status}):`, detail);
+    if (r.status >= 400 && r.status < 500 && ![401, 403, 429].includes(r.status)) {
+      return res.status(400).json({ error: "That email address wasn't accepted. Please check it and try again." });
+    }
+    throw new Error(`Buttondown ${r.status}`); // key problem or outage: use the backup path below
+  } catch (e) {
+    console.warn("Buttondown signup failed, saved to Supabase instead:", e.message);
+    await saveCopy();
+    return res.json({ ok: true, confirmEmail: false });
+  }
+});
+
+// <newsletter-format-start>
+function nlDecode(str) {
+  return String(str || "")
+    .replace(/&#8220;/g, "\u201c").replace(/&#8221;/g, "\u201d")
+    .replace(/&#8216;/g, "\u2018").replace(/&#8217;/g, "\u2019")
+    .replace(/&#8211;/g, "\u2013").replace(/&#8212;/g, "\u2014")
+    .replace(/&#038;|&amp;/g, "&").replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_, c) => String.fromCharCode(Number(c)))
+    .replace(/&[a-zA-Z]+;/g, "");
+}
+// Escape characters that Markdown would otherwise treat as formatting
+const nlMd  = (s) => nlDecode(s).replace(/([\\`*_{}\[\]()#+!|<>~])/g, "\\$1");
+const nlUrl = (u) => u.replace(/\(/g, "%28").replace(/\)/g, "%29");
+const nlScoreLabel = (n) => n >= 90 ? "EXCEPTIONAL" : n >= 80 ? "GREAT" : n >= 70 ? "GOOD" : "MIXED";
+
+function formatWeeklyIssue({ charts, score, news, now = new Date() }) {
+  const chart = charts?.chart || [];
+  if (!chart.length) throw new Error("Hot 50 data isn't available right now. Try again in a minute.");
+  const top  = chart.slice(0, 5);
+  const date = now.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+  const lines = [];
+  lines.push("<!-- buttondown-editor-mode: fancy -->");
+  lines.push(`**Week of ${date}.** What the world is actually playing and watching, straight from the GMN Hot 50.`);
+  lines.push("", "## Top 5 on Twitch right now", "");
+  top.forEach((g, i) => {
+    const bits = [`${g.viewersLabel || "?"} viewers`];
+    if (g.steamLabel) bits.push(`${g.steamLabel} on Steam`);
+    const move = /^[▲▼]/.test(g.trendLabel || "") ? ` (${g.trendLabel})` : "";
+    lines.push(`${i + 1}. **${nlMd(g.name)}**${move}: ${bits.join(" · ")}`);
+  });
+
+  if (score?.name && score.gmnScore != null) {
+    lines.push("", "## GMN Score of the Month", "");
+    lines.push(`**${nlMd(score.name)}** scores **${score.gmnScore}/100** (${nlScoreLabel(score.gmnScore)}).`);
+    const meta = [score.developer, score.platforms].filter(Boolean).map(nlMd).join(" · ");
+    if (meta) lines.push("", meta);
+  }
+
+  const stories = (news?.articles || []).filter(a => a?.title && a?.link).slice(0, 3);
+  if (stories.length) {
+    lines.push("", "## Top stories", "");
+    for (const a of stories) {
+      const t   = nlDecode(a.title);
+      const url = nlUrl(`https://gmnnews.org/article-detail?url=${encodeURIComponent(a.link)}&title=${encodeURIComponent(t)}`);
+      lines.push(`- [${nlMd(a.title)}](${url})`);
+    }
+  }
+
+  lines.push("", "**[See the full Hot 50 →](https://gmnnews.org/charts)**");
+  return { subject: `The Weekly Hot 50: ${nlDecode(top[0].name)} is #1 on Twitch`, body: lines.join("\n") };
+}
+// <newsletter-format-end>
+
+app.post("/api/newsletter/draft", async (req, res) => {
+  const user = await nlAuthedUser(req);
+  if (!user || !NL_ADMIN_IDS.includes(user.id)) return res.status(403).json({ error: "Not allowed." });
+  if (!BUTTONDOWN_API_KEY) return res.status(503).json({ error: "BUTTONDOWN_API_KEY isn't set on the server." });
+
+  try {
+    const base = `http://127.0.0.1:${PORT}`;
+    const get  = async (path) => {
+      try {
+        const r = await fetch(base + path, { signal: AbortSignal.timeout(90000) });
+        return r.ok ? await r.json() : null;
+      } catch { return null; }
+    };
+    const [charts, score, news] = await Promise.all([
+      get("/api/charts"), get("/api/charts/gmnscore"), get("/api/articles?limit=3"),
+    ]);
+    const { subject, body } = formatWeeklyIssue({ charts, score, news });
+
+    // "status" is ALWAYS set explicitly, so this can never send an email by accident.
+    const r = await fetch(`${BUTTONDOWN_BASE}/emails`, {
+      method: "POST",
+      headers: bdHeaders(),
+      body: JSON.stringify({ subject, body, status: "draft" }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      console.warn("Buttondown draft failed:", r.status, JSON.stringify(data).slice(0, 300));
+      return res.status(502).json({ error: `Buttondown rejected the draft (${r.status}). Check the Render logs.` });
+    }
+    res.json({ ok: true, subject, preview: body });
+  } catch (e) {
+    console.error("newsletter draft error:", e);
+    res.status(500).json({ error: e.message || "Couldn't build the draft." });
+  }
+});
+
 app.listen(PORT, "0.0.0.0", async () => {
   console.log(`\n🎮 GMN News API v3 → http://localhost:${PORT}`);
   console.log(`   Twitch:   ${TWITCH_CLIENT_ID            ? "✅ key found" : "❌ MISSING"}`);
@@ -1383,6 +1573,7 @@ app.listen(PORT, "0.0.0.0", async () => {
   console.log(`   YouTube:  ${YT_API_KEY                  ? "✅ key found" : "❌ MISSING"}`);
   console.log(`   Supabase: ${process.env.SUPABASE_SERVICE_KEY ? "✅ key found" : "❌ MISSING"}`);
   console.log(`   TMDB:     ${TMDB_API_KEY                 ? "✅ key found" : "❌ MISSING"}`);
+  console.log(`   Buttondown: ${BUTTONDOWN_API_KEY             ? "✅ key found" : "❌ MISSING (signups saved to Supabase only)"}`);
   console.log(`   News:     ✅ RSS feeds (12 sources)\n`);
 
   // ── Background cache warmer ─────────────────────────────────
