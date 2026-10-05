@@ -228,6 +228,21 @@ function getCache(key) {
   return entry.value;
 }
 
+// Requests from our own background warmer carry this header. Handlers skip
+// the cache read for them, rebuild fresh data, and overwrite the cache —
+// so real visitors keep getting the old (still valid) copy during the rebuild.
+const isRefresh = (req) => req.headers["x-gmn-refresh"] === "1";
+
+// Let browsers reuse chart/article responses for 60s (and serve slightly
+// stale data while revalidating) so repeat navigation feels instant.
+app.use((req, res, next) => {
+  if (req.method === "GET" && !isRefresh(req) &&
+      (req.path.startsWith("/api/charts") || req.path === "/api/articles")) {
+    res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  }
+  next();
+});
+
 // ─────────────────────────────────────────────────────────────
 //  HEALTH
 // ─────────────────────────────────────────────────────────────
@@ -243,7 +258,7 @@ app.get("/api/articles", async (req, res) => {
   const offset = Number(req.query.offset) || 0;
 
   const cacheKey = `articles_${source}`;
-  const cached   = getCache(cacheKey);
+  const cached   = isRefresh(req) ? null : getCache(cacheKey);
 
   try {
     let articles;
@@ -709,7 +724,7 @@ function formatPlayerCount(n) {
 }
 
 app.get("/api/charts", async (req, res) => {
-  const cached = getCache("charts");
+  const cached = isRefresh(req) ? null : getCache("charts");
   if (cached) return res.json(cached);
 
   try {
@@ -840,7 +855,7 @@ app.get("/api/charts", async (req, res) => {
 //  /api/charts/streams
 // ─────────────────────────────────────────────────────────────
 app.get("/api/charts/streams", async (req, res) => {
-  const cached = getCache("streams");
+  const cached = isRefresh(req) ? null : getCache("streams");
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
@@ -872,7 +887,7 @@ app.get("/api/charts/streams", async (req, res) => {
 //  /api/charts/releases
 // ─────────────────────────────────────────────────────────────
 app.get("/api/charts/releases", async (req, res) => {
-  const cached = getCache("releases_chart");
+  const cached = isRefresh(req) ? null : getCache("releases_chart");
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
@@ -922,7 +937,7 @@ app.get("/api/charts/releases", async (req, res) => {
 //  /api/charts/freetoplay
 // ─────────────────────────────────────────────────────────────
 app.get("/api/charts/freetoplay", async (req, res) => {
-  const cached = getCache("ftp_chart");
+  const cached = isRefresh(req) ? null : getCache("ftp_chart");
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
@@ -960,7 +975,7 @@ app.get("/api/charts/freetoplay", async (req, res) => {
 //  /api/charts/gmnscore
 // ─────────────────────────────────────────────────────────────
 app.get("/api/charts/gmnscore", async (req, res) => {
-  const cached = getCache("gmnscore");
+  const cached = isRefresh(req) ? null : getCache("gmnscore");
   if (cached) return res.json(cached);
   try {
     const token = await getTwitchToken();
@@ -1369,6 +1384,29 @@ app.listen(PORT, "0.0.0.0", async () => {
   console.log(`   Supabase: ${process.env.SUPABASE_SERVICE_KEY ? "✅ key found" : "❌ MISSING"}`);
   console.log(`   TMDB:     ${TMDB_API_KEY                 ? "✅ key found" : "❌ MISSING"}`);
   console.log(`   News:     ✅ RSS feeds (12 sources)\n`);
+
+  // ── Background cache warmer ─────────────────────────────────
+  // Rebuild the expensive data on a timer (before each TTL expires) so a
+  // visitor never has to wait for Twitch/Steam/IGDB/12 RSS feeds.
+  const WARM_BASE = `http://127.0.0.1:${PORT}`;
+  const warm = async (path) => {
+    try {
+      const r = await fetch(`${WARM_BASE}${path}`, {
+        headers: { "x-gmn-refresh": "1" },
+        signal: AbortSignal.timeout(90_000),
+      });
+      if (!r.ok) console.warn(`warm ${path} -> HTTP ${r.status}`);
+    } catch (e) { console.warn(`warm ${path} failed:`, e.message); }
+  };
+  const warmStreams = () => warm("/api/charts/streams");                       // TTL 5 min
+  const warmMain    = () => Promise.all([warm("/api/charts"), warm("/api/articles?limit=1")]); // TTL 10 min
+  const warmSlow    = () => Promise.all([                                      // TTL 60 min
+    warm("/api/charts/releases"), warm("/api/charts/freetoplay"), warm("/api/charts/gmnscore"),
+  ]);
+  warmStreams(); warmMain(); warmSlow();            // fire-and-forget on boot
+  setInterval(warmStreams, 4 * 60 * 1000);
+  setInterval(warmMain,    8 * 60 * 1000);
+  setInterval(warmSlow,   50 * 60 * 1000);
 
   // Archive articles on startup then every 30 minutes
   await archiveArticles();
