@@ -1,0 +1,9 @@
+# GMN News: crawlers are welcome everywhere except account and admin pages.
+User-agent: *
+Allow: /
+Disallow: /login
+Disallow: /signup
+Disallow: /forgot-password
+Disallow: /settings
+Disallow: /movies/admin
+Disallow: /newsletter/admin
