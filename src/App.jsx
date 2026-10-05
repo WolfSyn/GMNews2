@@ -133,10 +133,12 @@ function RootLayout() {
           <Route path="/settings"        element={<SettingsPage />} />
           <Route path="/movies"          element={<MoviesPage />} />
           <Route path="/movies/admin"    element={<MovieAdminPage />} />
+          <Route path="/newsletter/admin" element={<NewsletterAdminPage />} />
           <Route path="*"               element={<NotFound />} />
         </Routes>
       </main>
       <Footer />
+      <NewsletterPopup />
     </div>
   );
 }
@@ -340,11 +342,249 @@ function TrendingBar() {
 }
 
 /* ─────────────────────────────────────────
+   NEWSLETTER — guest signup (email only)
+───────────────────────────────────────── */
+const NL_KEY = "gmn_newsletter";
+const NL_SNOOZE_MS = 30 * 24 * 60 * 60 * 1000; // hide for 30 days after "X"
+function nlRead() { try { return JSON.parse(localStorage.getItem(NL_KEY) || "{}"); } catch { return {}; } }
+function nlWrite(patch) { try { localStorage.setItem(NL_KEY, JSON.stringify({ ...nlRead(), ...patch })); } catch {} }
+function nlCanShow() {
+  const st = nlRead();
+  if (st.subscribed) return false;
+  if (st.dismissedAt && Date.now() - st.dismissedAt < NL_SNOOZE_MS) return false;
+  return true;
+}
+
+async function subscribeToNewsletter({ email, source, apiOrigin }) {
+  const clean = (email || "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(clean) || clean.length > 254) {
+    return { ok: false, error: "Please enter a valid email address." };
+  }
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const r = await fetch(`${apiOrigin}/api/newsletter/subscribe`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      },
+      body: JSON.stringify({ email: clean, source }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) return { ok: true, confirmEmail: !!j.confirmEmail };
+    // The server said no on purpose (bad email, too many tries): show its message
+    if (r.status >= 400 && r.status < 500) {
+      return { ok: false, error: j.error || "Please check your email address and try again." };
+    }
+  } catch { /* server asleep or offline: fall through to the backup path */ }
+
+  // Backup: save straight to Supabase so the signup isn't lost
+  const { error } = await supabase.from("newsletter_subscribers").insert({ email: clean, source });
+  // 23505 = already saved. Treated as success so the form never reveals who is on the list.
+  if (error && error.code !== "23505") {
+    return { ok: false, error: "Something went wrong. Please try again in a moment." };
+  }
+  return { ok: true, confirmEmail: false };
+}
+
+const visuallyHidden = {
+  position: "absolute", width: 1, height: 1, margin: -1, padding: 0,
+  overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
+};
+
+function NewsletterForm({ source, onDone }) {
+  const { user } = useAuth();
+  const [email,  setEmail]  = useState("");
+  const [trap,   setTrap]   = useState("");          // hidden field — bots fill it
+  const [status, setStatus] = useState("idle");      // idle | loading | done
+  const [error,  setError]  = useState("");
+  const [confirmEmail, setConfirmEmail] = useState(true); // did we trigger a confirmation email?
+  const API_ORIGIN = useApiOrigin();
+  const inputId = `nl-email-${source}`;
+
+  // Logged-in users: prefill their account email
+  useEffect(() => { if (user?.email && !email) setEmail(user.email); }, [user]); // eslint-disable-line
+
+  async function submit(e) {
+    e.preventDefault();
+    if (status === "loading") return;
+    setError("");
+    if (trap) { setStatus("done"); return; }
+    setStatus("loading");
+    const res = await subscribeToNewsletter({ email, source, apiOrigin: API_ORIGIN });
+    if (!res.ok) { setStatus("idle"); setError(res.error); return; }
+    nlWrite({ subscribed: true });
+    setConfirmEmail(res.confirmEmail);
+    setStatus("done");
+    onDone?.();
+  }
+
+  if (status === "done") {
+    return (
+      <div role="status" style={{
+        background: "rgba(34,211,94,0.10)", border: "1px solid rgba(34,211,94,0.30)",
+        color: "var(--green)", borderRadius: 10, padding: "10px 14px", fontSize: 13, fontWeight: 600,
+      }}>
+        {confirmEmail
+          ? "Check your inbox to confirm your subscription. If you're already on the list, you're all set."
+          : "You're on the list! Thanks for subscribing."}
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} style={{ width: "100%" }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <label htmlFor={inputId} style={visuallyHidden}>Email address</label>
+        <input
+          id={inputId}
+          type="email"
+          required
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          autoComplete="email"
+          style={{
+            flex: "1 1 180px", minWidth: 0, padding: "10px 12px",
+            background: "var(--panel2)", border: "1px solid var(--ring-md)",
+            borderRadius: 10, color: "var(--text)", fontSize: 14,
+            fontFamily: "inherit", outline: "none",
+          }}
+          onFocus={e => e.target.style.borderColor = "var(--blue)"}
+          onBlur={e => e.target.style.borderColor = "var(--ring-md)"}
+        />
+        {/* Honeypot: invisible to people, tempting to bots */}
+        <input
+          type="text" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true"
+          value={trap} onChange={e => setTrap(e.target.value)}
+          style={{ position: "absolute", left: "-9999px", width: 1, height: 1, opacity: 0 }}
+        />
+        <button type="submit" disabled={status === "loading"} style={{
+          padding: "10px 16px", borderRadius: 10, border: "none",
+          background: "var(--red)", color: "#fff", fontWeight: 700, fontSize: 13,
+          cursor: status === "loading" ? "wait" : "pointer",
+          opacity: status === "loading" ? 0.7 : 1, whiteSpace: "nowrap",
+        }}>
+          {status === "loading" ? "Joining…" : "Subscribe"}
+        </button>
+      </div>
+      {error && <div role="alert" style={{ color: "var(--red)", fontSize: 12, marginTop: 6 }}>{error}</div>}
+    </form>
+  );
+}
+
+const NL_BLOCKED_PATHS = ["/login", "/signup", "/forgot-password", "/settings", "/privacy", "/support"];
+
+function NewsletterPopup() {
+  const { pathname } = useLocation();
+  const [ready, setReady] = useState(false);   // 20s passed OR scrolled ~halfway
+  const [open,  setOpen]  = useState(false);
+  const blocked = NL_BLOCKED_PATHS.includes(pathname) || pathname.startsWith("/movies/admin");
+
+  // Trigger: 20 seconds on the site, or about halfway down any page
+  useEffect(() => {
+    if (!nlCanShow()) return;
+    const t = setTimeout(() => setReady(true), 20000);
+    const onScroll = () => {
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      if (max > 300 && window.scrollY / max >= 0.5) setReady(true);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => { clearTimeout(t); window.removeEventListener("scroll", onScroll); };
+  }, []);
+
+  // Decide whether it's a good moment to actually show it
+  useEffect(() => {
+    if (!ready || open || blocked || !nlCanShow()) return;
+    // Never stack on top of the iOS app banner: on non-home pages wait until
+    // that banner has been dismissed (the homepage has no banner).
+    let bannerDismissed = false;
+    try { bannerDismissed = localStorage.getItem("gmn_app_banner_dismissed") === "true"; } catch {}
+    if (pathname !== "/" && !bannerDismissed) return;
+    setOpen(true);
+  }, [ready, open, blocked, pathname]);
+
+  function dismiss() {
+    nlWrite({ dismissedAt: Date.now() });
+    setOpen(false);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = e => { if (e.key === "Escape") dismiss(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]); // eslint-disable-line
+
+  if (!open || blocked) return null;
+
+  return (
+    <>
+      <style>{`
+        @keyframes gmnNlIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+        .gmn-nl-card { animation: gmnNlIn .35s ease-out; }
+        @media (prefers-reduced-motion: reduce) { .gmn-nl-card { animation: none; } }
+      `}</style>
+      <aside
+        className="gmn-nl-card"
+        role="dialog"
+        aria-labelledby="gmn-nl-title"
+        style={{
+          position: "fixed", right: 16, bottom: 16, zIndex: 90,
+          width: "min(380px, calc(100vw - 32px))",
+          background: "var(--panel)", border: "1px solid var(--ring-md)",
+          borderRadius: 16, padding: "18px 18px 14px",
+          boxShadow: "0 12px 40px rgba(0,0,0,0.55)",
+        }}
+      >
+        <button onClick={dismiss} aria-label="Close newsletter signup" style={{
+          position: "absolute", top: 8, right: 10, background: "transparent", border: "none",
+          color: "var(--muted)", fontSize: 22, lineHeight: 1, cursor: "pointer", padding: 4,
+        }}>×</button>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--red)", letterSpacing: "1.2px", marginBottom: 6 }}>
+          THE WEEKLY HOT 50
+        </div>
+        <div id="gmn-nl-title" style={{
+          fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 900,
+          textTransform: "uppercase", lineHeight: 1.1, marginBottom: 6, paddingRight: 24,
+        }}>
+          Know what the world is playing
+        </div>
+        <p style={{ fontSize: 13, color: "var(--muted2)", lineHeight: 1.55, margin: "0 0 12px" }}>
+          One email a week: the Hot 50 chart, the GMN Score and the top gaming stories.
+        </p>
+        <NewsletterForm source="popup" onDone={() => setTimeout(() => setOpen(false), 9000)} />
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 10 }}>
+          Free. Unsubscribe anytime. <Link to="/privacy" style={{ color: "var(--blue)" }}>Privacy Policy</Link>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+/* ─────────────────────────────────────────
    FOOTER
 ───────────────────────────────────────── */
 function Footer() {
   return (
     <footer>
+      <div style={{
+        maxWidth: 1280, margin: "0 auto 22px", paddingBottom: 22,
+        borderBottom: "1px solid var(--ring)",
+        display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div style={{ flex: "1 1 240px" }}>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 900, textTransform: "uppercase", color: "var(--text)" }}>
+            Get the weekly Hot 50
+          </div>
+          <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>
+            One email a week. Unsubscribe anytime.
+          </div>
+        </div>
+        <div style={{ flex: "1 1 320px", maxWidth: 440 }}>
+          <NewsletterForm source="footer" />
+        </div>
+      </div>
       <div className="footer-inner">
         <p>
           <Link to="/about">About</Link>
@@ -1661,7 +1901,7 @@ function PrivacyPage() {
     <div className="privacy-page">
       <section className="page-hero" style={{ textAlign: "center" }}>
         <h1>Privacy Policy</h1>
-        <p style={{ color: "var(--muted2)", fontSize: 13 }}>Effective Date: June 24, 2026 &nbsp;·&nbsp; Last Updated: June 24, 2026</p>
+        <p style={{ color: "var(--muted2)", fontSize: 13 }}>Effective Date: June 24, 2026 &nbsp;·&nbsp; Last Updated: October 5, 2026</p>
       </section>
 
       <section className="card policy-card" style={{ maxWidth: 860, margin: "0 auto 60px", padding: "32px 40px", borderRadius: 20 }}>
@@ -1676,6 +1916,7 @@ function PrivacyPage() {
         <p style={s}><strong style={{ color: "var(--text)" }}>b. User-Generated Content.</strong> We collect and store content you voluntarily submit to the Site, including game reviews, article comments, avatar images, favorite games, and followed games. This content may be publicly visible to other users of the Site.</p>
         <p style={s}><strong style={{ color: "var(--text)" }}>c. Profile Information.</strong> We collect optional profile information you choose to provide, including a biographical description and preferred gaming platform.</p>
         <p style={s}><strong style={{ color: "var(--text)" }}>d. Technical Data.</strong> We automatically collect standard server log data including IP addresses, browser type and version, operating system, referring URLs, and access timestamps. This data is used solely for security monitoring and operational purposes.</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>e. Newsletter Data.</strong> If you subscribe to the GMN News newsletter, we collect your email address, the date you subscribed, and the place on the Site where you signed up. If you are logged in, we may associate the subscription with your account. You do not need an account to subscribe.</p>
 
         <p style={h}>2. Use of Information</p>
         <p style={s}>We use collected information solely for the following purposes:</p>
@@ -1684,26 +1925,28 @@ function PrivacyPage() {
           <li>To display user-generated content on the Site</li>
           <li>To facilitate account recovery and transactional email communications</li>
           <li>To ensure the security, integrity, and performance of the Site</li>
+          <li>To send the GMN News newsletter to those who subscribe, and to honor unsubscribe requests</li>
           <li>To comply with applicable legal obligations</li>
         </ul>
 
         <p style={h}>3. Disclosure of Information</p>
         <p style={s}>We do not sell, rent, trade, or otherwise transfer your personal information to third parties for commercial purposes. We may disclose information in the following limited circumstances:</p>
-        <p style={s}><strong style={{ color: "var(--text)" }}>a. Service Providers.</strong> We engage the following third-party service providers who process data on our behalf: Supabase, Inc. (database and authentication infrastructure); Cloudflare, Inc. (content delivery and frontend hosting); and Render Services, Inc. (backend hosting). These providers are contractually obligated to process data only as directed by us.</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>a. Service Providers.</strong> We engage the following third-party service providers who process data on our behalf: Supabase, Inc. (database and authentication infrastructure); Cloudflare, Inc. (content delivery and frontend hosting); and Render Services, Inc. (backend hosting). We may also engage an email delivery provider to send our newsletter to subscribers. These providers are contractually obligated to process data only as directed by us.</p>
         <p style={s}><strong style={{ color: "var(--text)" }}>b. Third-Party Content APIs.</strong> The Site displays content sourced from Twitch Interactive, Inc. (IGDB and Helix API), Valve Corporation (Steam Web API), Fandom, Inc. (GameSpot), and YouTube LLC. Personal information is not transmitted to these providers in connection with content delivery.</p>
-        <p style={s}><strong style={{ color: "var(--text)" }}>c. Legal Requirements.</strong> We may disclose information if required to do so by law or in good-faith belief that such disclosure is necessary to comply with legal process, protect the rights or safety of the Company or others, or respond to claims of unlawful activity.</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>c. Advertising Partners.</strong> The Site displays advertising served by Google AdSense. Google, as a third-party vendor, uses cookies and similar technologies to serve ads based on a user's prior visits to the Site and other websites. You may opt out of personalized advertising by visiting <a href="https://adssettings.google.com" target="_blank" rel="noopener noreferrer" style={{ color: "var(--blue)" }}>Google Ads Settings</a> or <a href="https://www.aboutads.info" target="_blank" rel="noopener noreferrer" style={{ color: "var(--blue)" }}>www.aboutads.info</a>. We do not provide your account information or email address to Google for advertising purposes.</p>
+        <p style={s}><strong style={{ color: "var(--text)" }}>d. Legal Requirements.</strong> We may disclose information if required to do so by law or in good-faith belief that such disclosure is necessary to comply with legal process, protect the rights or safety of the Company or others, or respond to claims of unlawful activity.</p>
 
         <p style={h}>4. Data Retention</p>
-        <p style={s}>We retain account data and user-generated content for as long as your account remains active. Upon account deletion, your personal data is permanently removed from our systems within a reasonable timeframe, except where retention is required by applicable law.</p>
+        <p style={s}>We retain account data and user-generated content for as long as your account remains active. Upon account deletion, your personal data is permanently removed from our systems within a reasonable timeframe, except where retention is required by applicable law. Newsletter subscriber data is retained until you unsubscribe or ask us to delete it.</p>
 
         <p style={h}>5. Security</p>
         <p style={s}>We implement commercially reasonable technical and organizational measures to protect your personal information against unauthorized access, disclosure, alteration, or destruction. These measures include encrypted password storage, row-level security policies on our database, and HTTPS encryption for all data in transit. However, no method of transmission over the internet is 100% secure, and we cannot guarantee absolute security.</p>
 
         <p style={h}>6. Your Rights</p>
-        <p style={s}>You may access, update, or delete your personal information at any time through your account settings. Account deletion results in permanent removal of your profile, reviews, comments, and associated data. To exercise any rights not available through the Site interface, please contact us at the address below.</p>
+        <p style={s}>You may access, update, or delete your personal information at any time through your account settings. Account deletion results in permanent removal of your profile, reviews, comments, and associated data. You may unsubscribe from the newsletter at any time using the link included in every newsletter email, or by contacting us at the address below. To exercise any rights not available through the Site interface, please contact us at the address below.</p>
 
         <p style={h}>7. Cookies</p>
-        <p style={s}>The Site uses a session authentication token stored in your browser to maintain your logged-in state. We do not deploy advertising cookies, cross-site tracking technologies, or third-party analytics cookies.</p>
+        <p style={s}>The Site uses a session authentication token stored in your browser to maintain your logged-in state, and small items of local browser storage to remember preferences and recently viewed content (for example, dismissed banners and cached charts that help pages load faster). The Site displays advertising through Google AdSense; Google and its partners may place and read cookies or similar technologies on your device to serve and measure ads, including ads based on your prior visits to this or other websites. You can manage or opt out of personalized advertising as described in Section 3(c). We do not otherwise deploy cross-site tracking technologies or third-party analytics cookies.</p>
 
         <p style={h}>8. Children's Privacy</p>
         <p style={s}>The Site is not directed to individuals under the age of 13. We do not knowingly collect personal information from children under 13. If we become aware that a child under 13 has provided personal information, we will promptly delete such information. If you believe a child has submitted information to us, please contact us immediately.</p>
@@ -2521,6 +2764,25 @@ function ChartsPage() {
           <Link to="/reviews/submit" className="chart-footer-link">Write a Review →</Link>
         </div>
       </div>
+
+      {/* Newsletter signup */}
+      <div style={{
+        marginTop: 24, background: "var(--panel)", border: "1px solid var(--ring)",
+        borderRadius: 16, padding: "22px 24px",
+        display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div style={{ flex: "1 1 260px" }}>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 900, textTransform: "uppercase" }}>
+            Get the Hot 50 in your inbox
+          </div>
+          <div style={{ fontSize: 13, color: "var(--muted2)", marginTop: 4 }}>
+            A weekly look at what the world is actually playing and watching. Free, and you can unsubscribe anytime.
+          </div>
+        </div>
+        <div style={{ flex: "1 1 320px", maxWidth: 440 }}>
+          <NewsletterForm source="hot50" />
+        </div>
+      </div>
     </div>
   );
 }
@@ -3258,6 +3520,80 @@ function MovieAdminPage() {
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────
+   NEWSLETTER ADMIN — builds this week's issue as a Buttondown DRAFT
+───────────────────────────────────────── */
+function NewsletterAdminPage() {
+  const API_ORIGIN = useApiOrigin();
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
+  const isAdmin = user?.id === "f2f0e76e-4463-47b0-916f-3cbd6de5d75a";
+  const [busy,   setBusy]   = useState(false);
+  const [result, setResult] = useState(null); // { ok, subject, preview } or { ok: false, error }
+
+  useEffect(() => { if (!loading && !isAdmin) navigate("/"); }, [loading, isAdmin]); // eslint-disable-line
+
+  async function createDraft() {
+    setBusy(true); setResult(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const r = await fetch(`${API_ORIGIN}/api/newsletter/draft`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session?.access_token || ""}` },
+      });
+      const j = await r.json().catch(() => ({}));
+      setResult(r.ok && j.ok ? j : { ok: false, error: j.error || `Request failed (${r.status})` });
+    } catch {
+      setResult({ ok: false, error: "Couldn't reach the server. It may be waking up, so try again in a minute." });
+    } finally { setBusy(false); }
+  }
+
+  if (!isAdmin) return null;
+
+  return (
+    <div style={{ maxWidth: 680, margin: "0 auto", padding: "32px 20px 60px" }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: "var(--red)", letterSpacing: "1.2px", marginBottom: 6 }}>ADMIN</div>
+      <h1 style={{ fontFamily: "var(--font-display)", fontSize: 36, fontWeight: 900, textTransform: "uppercase", margin: "0 0 10px" }}>
+        Weekly Newsletter
+      </h1>
+      <p style={{ color: "var(--muted2)", fontSize: 14, lineHeight: 1.7, margin: "0 0 20px" }}>
+        This builds this week's issue from the live Hot 50, the GMN Score and the top stories, and saves it in Buttondown as a
+        <strong style={{ color: "var(--text)" }}> draft</strong>. Nothing is sent to subscribers. Open Buttondown, go to
+        <strong style={{ color: "var(--text)" }}> Emails</strong>, review it, and press send when you're happy.
+      </p>
+
+      <button onClick={createDraft} disabled={busy} style={{
+        padding: "12px 24px", borderRadius: 10, border: "none", background: "var(--red)", color: "#fff",
+        fontWeight: 800, fontSize: 14, cursor: busy ? "wait" : "pointer", opacity: busy ? 0.7 : 1,
+      }}>
+        {busy ? "Building draft…" : "Create this week's draft"}
+      </button>
+
+      {result?.ok === false && (
+        <div role="alert" style={{ marginTop: 16, background: "rgba(255,50,50,0.10)", border: "1px solid rgba(255,50,50,0.30)", borderRadius: 10, padding: "12px 14px", fontSize: 13, color: "#ff6b6b" }}>
+          {result.error}
+        </div>
+      )}
+
+      {result?.ok && (
+        <div style={{ marginTop: 16 }}>
+          <div role="status" style={{ background: "rgba(34,211,94,0.10)", border: "1px solid rgba(34,211,94,0.30)", borderRadius: 10, padding: "12px 14px", fontSize: 13, color: "var(--green)", fontWeight: 600 }}>
+            Draft saved in Buttondown: "{result.subject}". Nothing has been sent.
+          </div>
+          <a href="https://buttondown.com" target="_blank" rel="noopener noreferrer"
+            style={{ display: "inline-block", marginTop: 12, fontSize: 13, fontWeight: 700, color: "var(--blue)" }}>
+            Open Buttondown →
+          </a>
+          <details style={{ marginTop: 14 }}>
+            <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--muted2)" }}>Preview the text that was saved</summary>
+            <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, lineHeight: 1.6, color: "var(--muted2)", background: "var(--panel)", border: "1px solid var(--ring)", borderRadius: 10, padding: 14, marginTop: 8 }}>{result.preview}</pre>
+          </details>
+        </div>
       )}
     </div>
   );
