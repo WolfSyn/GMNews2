@@ -154,6 +154,32 @@ function ScrollToTop() {
 /* ─────────────────────────────────────────
    API hooks
 ───────────────────────────────────────── */
+/* ─────────────────────────────────────────
+   Fast-load helpers
+   • readCache/writeCache: remember the last response in the browser so the
+     page paints instantly with the previous data, then refreshes quietly.
+   • fetchJsonShared: two components asking for the same URL at the same
+     moment (e.g. trending bar + homepage) share one request.
+───────────────────────────────────────── */
+function readCache(key) {
+  try {
+    const raw = localStorage.getItem("gmn_cache_" + key);
+    return raw ? JSON.parse(raw).data : null;
+  } catch { return null; }
+}
+function writeCache(key, data) {
+  try { localStorage.setItem("gmn_cache_" + key, JSON.stringify({ t: Date.now(), data })); } catch {}
+}
+const _inflight = new Map();
+function fetchJsonShared(url) {
+  if (_inflight.has(url)) return _inflight.get(url);
+  const p = fetch(url)
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .finally(() => setTimeout(() => _inflight.delete(url), 5000));
+  _inflight.set(url, p);
+  return p;
+}
+
 function useApiBase() {
   return useMemo(() => {
     const raw = import.meta.env.VITE_API_BASE?.trim();
@@ -283,16 +309,18 @@ function Header() {
 
 function TrendingBar() {
   const API_ORIGIN = useApiOrigin();
-  const [items, setItems] = useState(["Loading live trends…"]);
+  const toItems = data => data.slice(0, 10).map((g, i) => `#${i + 1} ${g.name}`);
+  const [items, setItems] = useState(() => {
+    const c = readCache("streams");
+    return c?.length ? toItems(c) : ["Loading live trends…"];
+  });
 
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(`${API_ORIGIN}/api/charts/streams`);
-        if (!r.ok) return;
-        const data = await r.json();
-        if (data?.length) setItems(data.slice(0, 10).map((g, i) => `#${i + 1} ${g.name}`));
-      } catch { /* keep fallback */ }
+        const data = await fetchJsonShared(`${API_ORIGIN}/api/charts/streams`);
+        if (data?.length) { setItems(toItems(data)); writeCache("streams", data); }
+      } catch { /* keep what we have */ }
     })();
   }, [API_ORIGIN]);
 
@@ -407,23 +435,23 @@ function HomePage() {
   const API_ORIGIN = useApiOrigin();
 
   // Live chart data
-  const [chartData,   setChartData]   = useState(null);
+  const [chartData,   setChartData]   = useState(() => readCache("charts"));
   const [chartErr,    setChartErr]    = useState(null);
-  const [chartLoading,setChartLoading]= useState(true);
+  const [chartLoading,setChartLoading]= useState(() => !readCache("charts"));
 
   // GMN Score
-  const [scoreData,   setScoreData]   = useState(null);
-  const [scoreLoading,setScoreLoading]= useState(true);
+  const [scoreData,   setScoreData]   = useState(() => readCache("gmnscore"));
+  const [scoreLoading,setScoreLoading]= useState(() => !readCache("gmnscore"));
 
   // Mini charts
-  const [streams,     setStreams]     = useState([]);
-  const [releases,    setReleases]    = useState([]);
-  const [freeToPlay,  setFreeToPlay]  = useState([]);
-  const [miniLoading, setMiniLoading] = useState(true);
+  const [streams,     setStreams]     = useState(() => readCache("streams")  || []);
+  const [releases,    setReleases]    = useState(() => readCache("releases") || []);
+  const [freeToPlay,  setFreeToPlay]  = useState(() => readCache("ftp")      || []);
+  const [miniLoading, setMiniLoading] = useState(() => !(readCache("streams") && readCache("releases") && readCache("ftp")));
 
   // Latest news articles
-  const [latest,      setLatest]      = useState([]);
-  const [newsLoading, setNewsLoading] = useState(true);
+  const [latest,      setLatest]      = useState(() => readCache("home_latest") || []);
+  const [newsLoading, setNewsLoading] = useState(() => !readCache("home_latest"));
   const [newsErr,     setNewsErr]     = useState(null);
 
   const [platformFilter, setPlatformFilter] = useState("all");
@@ -435,9 +463,11 @@ function HomePage() {
       try {
         const r = await fetch(`${API_ORIGIN}/api/charts`);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        setChartData(await r.json());
+        const d = await r.json();
+        setChartData(d);
+        writeCache("charts", d);
       } catch (e) {
-        setChartErr(e.message || "Failed to load chart");
+        if (!readCache("charts")) setChartErr(e.message || "Failed to load chart");
       } finally {
         setChartLoading(false);
       }
@@ -448,7 +478,7 @@ function HomePage() {
     (async () => {
       try {
         const r = await fetch(`${API_ORIGIN}/api/charts/gmnscore`);
-        if (r.ok) setScoreData(await r.json());
+        if (r.ok) { const d = await r.json(); setScoreData(d); writeCache("gmnscore", d); }
       } finally { setScoreLoading(false); }
     })();
   }, [API_ORIGIN]);
@@ -456,14 +486,14 @@ function HomePage() {
   useEffect(() => {
     (async () => {
       try {
-        const [rs, rr, rf] = await Promise.all([
-          fetch(`${API_ORIGIN}/api/charts/streams`),
-          fetch(`${API_ORIGIN}/api/charts/releases`),
-          fetch(`${API_ORIGIN}/api/charts/freetoplay`),
+        const [rs, rr, rf] = await Promise.allSettled([
+          fetchJsonShared(`${API_ORIGIN}/api/charts/streams`),
+          fetchJsonShared(`${API_ORIGIN}/api/charts/releases`),
+          fetchJsonShared(`${API_ORIGIN}/api/charts/freetoplay`),
         ]);
-        if (rs.ok) setStreams(await rs.json());
-        if (rr.ok) setReleases(await rr.json());
-        if (rf.ok) setFreeToPlay(await rf.json());
+        if (rs.status === "fulfilled") { setStreams(rs.value);    writeCache("streams",  rs.value); }
+        if (rr.status === "fulfilled") { setReleases(rr.value);   writeCache("releases", rr.value); }
+        if (rf.status === "fulfilled") { setFreeToPlay(rf.value); writeCache("ftp",      rf.value); }
       } finally { setMiniLoading(false); }
     })();
   }, [API_ORIGIN]);
@@ -475,8 +505,9 @@ function HomePage() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = await r.json();
         setLatest(j.articles || []);
+        writeCache("home_latest", j.articles || []);
       } catch (e) {
-        setNewsErr(e.message || "Failed to load");
+        if (!readCache("home_latest")) setNewsErr(e.message || "Failed to load");
       } finally { setNewsLoading(false); }
     })();
   }, [API_BASE]);
@@ -610,7 +641,7 @@ function HomePage() {
 
           <div className="chart-footer">
             <span className="chart-footer-note">
-              Top 10 of 50 · Source: Twitch API + Steam Web API
+              Top 10 of 50
             </span>
             <Link to="/charts" className="chart-footer-link">
               View All 50 Games →
@@ -764,6 +795,8 @@ function HomePage() {
             <img
               src="/iPhone_show1.png"
               alt="GMN News iOS App"
+              loading="lazy"
+              decoding="async"
               style={{
                 height: 200,
                 width: "auto",
@@ -2808,12 +2841,16 @@ function scoreColor(s) {
    MOVIE RATINGS SIDEBAR WIDGET
 ───────────────────────────────────────── */
 function MovieRatingsSidebar({ apiOrigin }) {
-  const [movies, setMovies] = useState([]);
+  const [movies, setMovies] = useState(() => readCache("movies_side") || []);
 
   useEffect(() => {
     fetch(`${apiOrigin}/api/movies`)
       .then(r => r.json())
-      .then(d => setMovies(Array.isArray(d) ? d.slice(0, 4) : []))
+      .then(d => {
+        const list = Array.isArray(d) ? d.slice(0, 4) : [];
+        setMovies(list);
+        writeCache("movies_side", list);
+      })
       .catch(() => {});
   }, [apiOrigin]);
 
