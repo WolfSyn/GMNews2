@@ -1217,6 +1217,96 @@ async function archiveArticles() {
 
 const PORT = Number(process.env.PORT) || 3000;
 // ─────────────────────────────────────────────────────────────
+//  HOT 50 DAILY ARCHIVE → SUPABASE (table: hot50_snapshots)
+//  One snapshot per day (America/Chicago date), taken at/after
+//  SNAPSHOT_HOUR (default 20 = 8 PM Central, prime-time viewing).
+//  Checked hourly + on startup, so a restart can't skip a day.
+// ─────────────────────────────────────────────────────────────
+const SNAPSHOT_TZ   = "America/Chicago";
+const SNAPSHOT_HOUR = Number(process.env.HOT50_SNAPSHOT_HOUR ?? 20);
+
+function chicagoNow() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: SNAPSHOT_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", hour12: false,
+  }).formatToParts(new Date());
+  const g = t => parts.find(p => p.type === t)?.value;
+  return { date: `${g("year")}-${g("month")}-${g("day")}`, hour: Number(g("hour")) % 24 };
+}
+
+async function snapshotHot50({ force = false } = {}) {
+  try {
+    const { date, hour } = chicagoNow();
+    if (!force && hour < SNAPSHOT_HOUR) return;
+
+    const { count, error: cErr } = await supabase
+      .from("hot50_snapshots")
+      .select("*", { count: "exact", head: true })
+      .eq("snapshot_date", date);
+    if (cErr) { console.error("Hot 50 snapshot check error:", cErr.message); return; }
+    if (count > 0 && !force) return;            // already archived today
+
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/charts`, { signal: AbortSignal.timeout(90_000) });
+    if (!r.ok) throw new Error(`/api/charts HTTP ${r.status}`);
+    const data = await r.json();
+    const chart = data?.chart || [];
+    if (chart.length < 10) throw new Error("chart too small, skipping snapshot");
+
+    const rows = chart.map(g => ({
+      snapshot_date: date,
+      rank:          g.rank,
+      game_name:     g.name,
+      twitch_id:     g.twitchId || null,
+      viewers:       g.viewers ?? 0,
+      steam_players: g.steamPlayers ?? null,
+      igdb_rating:   g.igdbRating ?? null,
+      cover_url:     g.coverUrl || null,
+    }));
+
+    const { error } = await supabase
+      .from("hot50_snapshots")
+      .upsert(rows, { onConflict: "snapshot_date,game_name" });
+    if (error) console.error("Hot 50 snapshot error:", error.message);
+    else console.log(`✅ Archived Hot 50 snapshot for ${date} (${rows.length} games)`);
+  } catch (e) {
+    console.error("Hot 50 snapshot failed:", e.message);
+  }
+}
+
+// Read API for clients / reports.
+//   /api/charts/history?days=30            -> list of snapshot dates
+//   /api/charts/history?date=2026-10-21    -> that day's full Hot 50
+//   /api/charts/history?game=Valorant&days=30 -> one game's rank/viewers over time
+app.get("/api/charts/history", async (req, res) => {
+  try {
+    const days = Math.min(Math.max(parseInt(req.query.days) || 30, 1), 365);
+    const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+
+    if (req.query.date) {
+      const { data, error } = await supabase.from("hot50_snapshots")
+        .select("*").eq("snapshot_date", String(req.query.date)).order("rank");
+      if (error) throw error;
+      return res.json({ date: req.query.date, chart: data });
+    }
+    if (req.query.game) {
+      const { data, error } = await supabase.from("hot50_snapshots")
+        .select("snapshot_date,rank,viewers,steam_players")
+        .ilike("game_name", String(req.query.game))
+        .gte("snapshot_date", since).order("snapshot_date");
+      if (error) throw error;
+      return res.json({ game: req.query.game, history: data });
+    }
+    const { data, error } = await supabase.from("hot50_snapshots")
+      .select("snapshot_date").gte("snapshot_date", since)
+      .order("snapshot_date", { ascending: false }).limit(50 * 365);
+    if (error) throw error;
+    res.json({ dates: [...new Set(data.map(r => r.snapshot_date))] });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "history failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 //  TMDB MOVIE SEARCH
 // ─────────────────────────────────────────────────────────────
 app.get("/api/movies/search", async (req, res) => {
@@ -1602,4 +1692,8 @@ app.listen(PORT, "0.0.0.0", async () => {
   // Archive articles on startup then every 30 minutes
   await archiveArticles();
   setInterval(archiveArticles, 30 * 60 * 1000);
+
+  // Hot 50 daily archive: catch-up check shortly after boot, then hourly
+  setTimeout(snapshotHot50, 2 * 60 * 1000);
+  setInterval(snapshotHot50, 60 * 60 * 1000);
 });
