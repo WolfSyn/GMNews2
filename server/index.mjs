@@ -254,6 +254,49 @@ app.get("/ping", (_req, res) => res.json({ ok: true }));
 //  /api/news  —  Latest gaming news from all RSS sources
 //  Merged, deduped, sorted by date
 // ─────────────────────────────────────────────────────────────
+// Build the merged article list from the live RSS feeds (single-flight:
+// concurrent callers share one rebuild instead of each hitting 12 feeds).
+const articleBuilds = new Map();
+function buildArticles(source) {
+  const cacheKey = `articles_${source}`;
+  if (articleBuilds.has(cacheKey)) return articleBuilds.get(cacheKey);
+  const p = (async () => {
+    const feeds = source === "all"
+      ? RSS_FEEDS
+      : RSS_FEEDS.filter(f => f.name.toLowerCase() === source.toLowerCase());
+    const results = await Promise.allSettled(feeds.map(fetchRSSFeed));
+    const all     = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
+    const seen = new Set();
+    const articles = all
+      .filter(a => { if (seen.has(a.link)) return false; seen.add(a.link); return true; })
+      .sort((a, b) => {
+        if (!a.date && !b.date) return 0;
+        if (!a.date) return 1;
+        if (!b.date) return -1;
+        return new Date(b.date) - new Date(a.date);
+      });
+    // Never overwrite a good cache with an empty result from failed feeds
+    if (articles.length) setCache(cacheKey, articles, 10 * 60 * 1000);
+    return articles;
+  })().finally(() => articleBuilds.delete(cacheKey));
+  articleBuilds.set(cacheKey, p);
+  return p;
+}
+
+// Fast fallback: newest articles straight from the Supabase archive.
+async function latestFromArchive(source) {
+  let q = supabase.from("articles")
+    .select("title, link, date, image, deck, source, source_color")
+    .order("date", { ascending: false }).limit(200);
+  if (source !== "all") q = q.ilike("source", source);
+  const { data, error } = await q;
+  if (error || !data?.length) return null;
+  return data.map(a => ({
+    title: a.title, link: a.link, date: a.date, image: a.image,
+    deck: a.deck, source: a.source, sourceColor: a.source_color,
+  }));
+}
+
 app.get("/api/articles", async (req, res) => {
   const source = req.query.source || "all"; // filter by source name
   const limit  = Math.min(100, Number(req.query.limit)  || 20);
@@ -263,33 +306,20 @@ app.get("/api/articles", async (req, res) => {
   const cached   = isRefresh(req) ? null : getCache(cacheKey);
 
   try {
-    let articles;
-    if (cached) {
-      articles = cached;
-    } else {
-      // Fetch all feeds in parallel
-      const feeds   = source === "all"
-        ? RSS_FEEDS
-        : RSS_FEEDS.filter(f => f.name.toLowerCase() === source.toLowerCase());
-
-      const results = await Promise.allSettled(feeds.map(fetchRSSFeed));
-      const all     = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
-
-      // Dedupe by link, sort newest first
-      const seen = new Set();
-      articles = all
-        .filter(a => { if (seen.has(a.link)) return false; seen.add(a.link); return true; })
-        .sort((a, b) => {
-          if (!a.date && !b.date) return 0;
-          if (!a.date) return 1;
-          if (!b.date) return -1;
-          return new Date(b.date) - new Date(a.date);
-        });
-
-      setCache(cacheKey, articles, 10 * 60 * 1000); // 10 min cache
+    let articles = cached;
+    if (!articles) {
+      if (isRefresh(req)) {
+        articles = await buildArticles(source);
+      } else {
+        // Cold cache: answer instantly from the archive and refresh live
+        // feeds in the background, instead of making the visitor wait.
+        articles = await latestFromArchive(source);
+        buildArticles(source).catch(e => console.warn("bg article build failed:", e.message));
+        if (!articles) articles = await buildArticles(source);   // archive empty: wait for live
+      }
     }
 
-    const page   = articles.slice(offset, offset + limit);
+    const page = articles.slice(offset, offset + limit);
     res.json({
       articles: page,
       paging: {
@@ -1684,7 +1714,11 @@ app.listen(PORT, "0.0.0.0", async () => {
   const warmSlow    = () => Promise.all([                                      // TTL 60 min
     warm("/api/charts/releases"), warm("/api/charts/freetoplay"), warm("/api/charts/gmnscore"),
   ]);
-  warmStreams(); warmMain(); warmSlow();            // fire-and-forget on boot
+  // Boot: stagger instead of firing everything at once — the free Render
+  // instance has very little CPU and a stampede made feeds time out.
+  warmMain();
+  setTimeout(warmStreams, 20 * 1000);
+  setTimeout(warmSlow,    45 * 1000);
   setInterval(warmStreams, 4 * 60 * 1000);
   setInterval(warmMain,    8 * 60 * 1000);
   setInterval(warmSlow,   50 * 60 * 1000);
