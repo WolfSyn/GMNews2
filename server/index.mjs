@@ -1217,7 +1217,7 @@ async function archiveArticles() {
 
 const PORT = Number(process.env.PORT) || 3000;
 // ─────────────────────────────────────────────────────────────
-//  HOT 50 DAILY ARCHIVE → SUPABASE (table: hot50_snapshots)
+//  TOP-GAMES DAILY ARCHIVE → SUPABASE (table: hot50_snapshots, top 200)
 //  One snapshot per day (America/Chicago date), taken at/after
 //  SNAPSHOT_HOUR (default 20 = 8 PM Central, prime-time viewing).
 //  Checked hourly + on startup, so a restart can't skip a day.
@@ -1234,7 +1234,89 @@ function chicagoNow() {
   return { date: `${g("year")}-${g("month")}-${g("day")}`, hour: Number(g("hour")) % 24 };
 }
 
+const SNAPSHOT_SIZE = Math.min(Number(process.env.HOT50_SNAPSHOT_SIZE ?? 200), 300);
+
+// Run async fn over items with limited concurrency (gentle on the free
+// Render CPU and on Twitch/Steam/IGDB rate limits).
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      try { out[i] = await fn(items[i], i); } catch { out[i] = null; }
+    }
+  }));
+  return out;
+}
+
+// Dedicated collector for the nightly archive: top N real games with
+// per-game viewer totals (the live /api/charts only needs the top 50).
+async function collectTopGames(size = SNAPSHOT_SIZE) {
+  const token = await getTwitchToken();
+
+  // 1) Top categories from Twitch, paged, non-game categories filtered out
+  const games = [];
+  const seenIds = new Set();
+  let cursor = "";
+  for (let page = 0; page < 5 && games.length < size; page++) {
+    const r = await fetch(
+      `https://api.twitch.tv/helix/games/top?first=100${cursor ? `&after=${cursor}` : ""}`,
+      { headers: twitchHeaders(token), signal: AbortSignal.timeout(10_000) }
+    );
+    if (!r.ok) throw new Error(`Twitch top games ${r.status}`);
+    const j = await r.json();
+    for (const g of (j.data || [])) {
+      if (!seenIds.has(g.id) && isRealGame(g.name)) { seenIds.add(g.id); games.push(g); }
+    }
+    cursor = j.pagination?.cursor;
+    if (!cursor) break;
+  }
+  const top = games.slice(0, size);
+
+  // 2) Live viewers per game (sum of that game's top 100 streams)
+  const viewers = await mapLimit(top, 8, async (g) => {
+    const r = await fetch(
+      `https://api.twitch.tv/helix/streams?game_id=${g.id}&first=100`,
+      { headers: twitchHeaders(token), signal: AbortSignal.timeout(10_000) }
+    );
+    if (!r.ok) return null;
+    const j = await r.json();
+    return (j.data || []).reduce((n, st) => n + (st.viewer_count || 0), 0);
+  });
+
+  // 3) IGDB covers/ratings in batches of 50
+  const igdbByName = {};
+  for (let i = 0; i < top.length; i += 50) {
+    const batch = await fetchIGDBCovers(top.slice(i, i + 50).map(g => g.name), token);
+    for (const g of batch) igdbByName[g.name?.toLowerCase()] = g;
+  }
+
+  // 4) Steam concurrent players
+  const steam = await mapLimit(top, 6, g => fetchSteamPlayersByName(g.name).catch(() => null));
+
+  const rows = top.map((g, i) => {
+    const igdb = igdbByName[g.name.toLowerCase()] || null;
+    const cover = igdb?.cover?.url
+      ? igdb.cover.url.replace("t_thumb", "t_cover_big").replace("http://", "https://")
+      : (g.box_art_url ? g.box_art_url.replace("{width}", "120").replace("{height}", "160") : null);
+    return {
+      name: g.name,
+      twitchId: g.id,
+      viewers: viewers[i] ?? 0,
+      steamPlayers: steam[i] ?? null,
+      igdbRating: igdb?.rating ? Math.round(igdb.rating) : null,
+      coverUrl: cover,
+    };
+  });
+  rows.sort((a, b) => b.viewers - a.viewers);
+  return rows.map((r, i) => ({ rank: i + 1, ...r }));
+}
+
+let snapshotRunning = false;
 async function snapshotHot50({ force = false } = {}) {
+  if (snapshotRunning) return;
+  snapshotRunning = true;
   try {
     const { date, hour } = chicagoNow();
     if (!force && hour < SNAPSHOT_HOUR) return;
@@ -1246,11 +1328,9 @@ async function snapshotHot50({ force = false } = {}) {
     if (cErr) { console.error("Hot 50 snapshot check error:", cErr.message); return; }
     if (count > 0 && !force) return;            // already archived today
 
-    const r = await fetch(`http://127.0.0.1:${PORT}/api/charts`, { signal: AbortSignal.timeout(90_000) });
-    if (!r.ok) throw new Error(`/api/charts HTTP ${r.status}`);
-    const data = await r.json();
-    const chart = data?.chart || [];
-    if (chart.length < 10) throw new Error("chart too small, skipping snapshot");
+    console.log(`Collecting top ${SNAPSHOT_SIZE} games for ${date}…`);
+    const chart = await collectTopGames();
+    if (chart.length < 50) throw new Error(`only ${chart.length} games collected, skipping snapshot`);
 
     const rows = chart.map(g => ({
       snapshot_date: date,
@@ -1263,13 +1343,17 @@ async function snapshotHot50({ force = false } = {}) {
       cover_url:     g.coverUrl || null,
     }));
 
-    const { error } = await supabase
-      .from("hot50_snapshots")
-      .upsert(rows, { onConflict: "snapshot_date,game_name" });
-    if (error) console.error("Hot 50 snapshot error:", error.message);
-    else console.log(`✅ Archived Hot 50 snapshot for ${date} (${rows.length} games)`);
+    for (let i = 0; i < rows.length; i += 100) {
+      const { error } = await supabase
+        .from("hot50_snapshots")
+        .upsert(rows.slice(i, i + 100), { onConflict: "snapshot_date,game_name" });
+      if (error) { console.error("Hot 50 snapshot error:", error.message); return; }
+    }
+    console.log(`✅ Archived Hot 50 snapshot for ${date} (${rows.length} games)`);
   } catch (e) {
     console.error("Hot 50 snapshot failed:", e.message);
+  } finally {
+    snapshotRunning = false;
   }
 }
 
@@ -1297,8 +1381,8 @@ app.get("/api/charts/history", async (req, res) => {
       return res.json({ game: req.query.game, history: data });
     }
     const { data, error } = await supabase.from("hot50_snapshots")
-      .select("snapshot_date").gte("snapshot_date", since)
-      .order("snapshot_date", { ascending: false }).limit(50 * 365);
+      .select("snapshot_date").eq("rank", 1).gte("snapshot_date", since)
+      .order("snapshot_date", { ascending: false }).limit(365);
     if (error) throw error;
     res.json({ dates: [...new Set(data.map(r => r.snapshot_date))] });
   } catch (e) {
