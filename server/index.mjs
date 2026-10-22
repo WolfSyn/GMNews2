@@ -1357,6 +1357,17 @@ async function snapshotHot50({ force = false } = {}) {
   }
 }
 
+// Manual trigger (e.g. to test, or to backfill today). Requires the
+// SNAPSHOT_KEY env var on Render:  /api/admin/snapshot?key=YOURKEY
+// Runs now regardless of the hour and refreshes today's rows. It runs in the
+// background; progress and the result appear in the Render logs.
+app.get("/api/admin/snapshot", (req, res) => {
+  const key = process.env.SNAPSHOT_KEY;
+  if (!key || req.query.key !== key) return res.status(403).json({ error: "forbidden" });
+  snapshotHot50({ force: true });
+  res.json({ started: true, note: "Check the Render logs for 'Archived Hot 50 snapshot'." });
+});
+
 // Read API for clients / reports.
 //   /api/charts/history?days=30            -> list of snapshot dates
 //   /api/charts/history?date=2026-10-21    -> that day's full Hot 50
@@ -1774,10 +1785,12 @@ app.listen(PORT, "0.0.0.0", async () => {
   setInterval(warmSlow,   50 * 60 * 1000);
 
   // Archive articles on startup then every 30 minutes
-  await archiveArticles();
+  // Timers first, so nothing below can stop them from being set up.
   setInterval(archiveArticles, 30 * 60 * 1000);
 
   // Hot 50 daily archive: catch-up check shortly after boot, then hourly
   setTimeout(snapshotHot50, 2 * 60 * 1000);
   setInterval(snapshotHot50, 60 * 60 * 1000);
+
+  archiveArticles().catch(e => console.error("startup archive failed:", e.message));
 });
