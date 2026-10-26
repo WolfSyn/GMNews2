@@ -25,6 +25,7 @@ import {
 } from "./Auth";
 import { supabase } from "./supabase";
 import LandingPage from "./LandingPage";
+import DataPage from "./DataPage";
 
 export default function App() {
   return (
@@ -118,6 +119,11 @@ function LandingRoute() {
   );
 }
 
+function DataRoute() {
+  usePageMeta(PAGE_META.data);
+  return <DataPage apiOrigin={useApiOrigin()} />;
+}
+
 function RootLayout() {
   return (
     <div className="app">
@@ -134,6 +140,7 @@ function RootLayout() {
           <Route path="/blog"           element={<BlogPage />} />
           <Route path="/videos"         element={<VideosPage />} />
           <Route path="/tech"           element={<TechPage />} />
+          <Route path="/data"           element={<DataRoute />} />
           <Route path="/support"        element={<SupportPage />} />
           <Route path="/privacy"        element={<PrivacyPage />} />
           <Route path="/article-detail" element={<ArticleDetailPage />} />
@@ -245,6 +252,8 @@ const PAGE_META = {
               description: "Report a bug or send feedback to the GMN News team. We read everything." },
   privacy:  { path: "/privacy",  title: "Privacy Policy",
               description: "How GMN News collects, uses and protects your information, including accounts, newsletter signups and advertising." },
+  data:     { path: "/data",     title: "GMN Data: Daily Top 200 Game Viewership History",
+              description: "Daily history of the top 200 games on Twitch and Steam: viewers, players, ratings and rank changes. Request data for your studio, publisher or agency." },
   tech:     { path: "/tech",     title: "GMN Tech: Websites, Apps & AI Solutions",
               description: "GMN Tech builds websites, mobile apps and AI solutions. See our services, process and pricing." },
   // Pages that shouldn't appear in search results (no real content yet, or personal)
@@ -397,7 +406,7 @@ function Header() {
             <NavLink to="/digest">Digest</NavLink>
             <NavLink to="/reviews">Reviews</NavLink>
             <NavLink to="/movies">Movies</NavLink>
-            <NavLink to="/tech">GMN Tech</NavLink>
+            <NavLink to="/data">GMN Data</NavLink>
           </div>
 
           <NavLink to="/search" className="nav-icon-btn" aria-label="Search">
