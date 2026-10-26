@@ -7,3 +7,5 @@ Disallow: /forgot-password
 Disallow: /settings
 Disallow: /movies/admin
 Disallow: /newsletter/admin
+ 
+Sitemap: https://gmnnews.org/sitemap.xml
