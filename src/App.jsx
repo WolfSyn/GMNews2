@@ -24,6 +24,7 @@ import {
   useFollowedGames,
 } from "./Auth";
 import { supabase } from "./supabase";
+import LandingPage from "./LandingPage";
 
 export default function App() {
   return (
@@ -46,7 +47,7 @@ function AppBanner() {
   const { pathname } = useLocation();
 
   // Don't show on homepage — it has the full promo section
-  if (!visible || pathname === "/") return null;
+  if (!visible || pathname === "/" || pathname === "/billboard") return null;
 
   function dismiss() {
     try { localStorage.setItem("gmn_app_banner_dismissed", "true"); } catch {}
@@ -103,6 +104,20 @@ function AppBanner() {
   );
 }
 
+function LandingRoute() {
+  usePageMeta(PAGE_META.home);
+  const apiBase   = useApiBase();
+  const apiOrigin = useApiOrigin();
+  return (
+    <LandingPage
+      apiOrigin={apiOrigin}
+      apiBase={apiBase}
+      NewsletterForm={NewsletterForm}
+      decodeEntities={decodeEntities}
+    />
+  );
+}
+
 function RootLayout() {
   return (
     <div className="app">
@@ -112,7 +127,8 @@ function RootLayout() {
         <ScrollToTop />
         <AuthRouteMeta />
         <Routes>
-          <Route path="/"               element={<HomePage />} />
+          <Route path="/"               element={<LandingRoute />} />
+          <Route path="/billboard"      element={<HomePage />} />
           <Route path="/about"          element={<AboutPage />} />
           <Route path="/articles"       element={<ArticlesPage />} />
           <Route path="/blog"           element={<BlogPage />} />
@@ -209,6 +225,8 @@ const X_HANDLE      = "@GMNNewsOfficial";
 // characters and descriptions under ~160 so Google doesn't cut them off).
 const PAGE_META = {
   home:     { path: "/",         title: DEFAULT_TITLE, description: DEFAULT_DESC },
+  billboard:{ path: "/billboard", title: "The Billboard: Live Gaming Charts and News",
+              description: "The GMN Billboard: live gaming charts ranked by Twitch viewers and Steam players, plus GMN Scores, new releases, free-to-play and the latest news." },
   charts:   { path: "/charts",   title: "Hot 50: Most Watched Games on Twitch Right Now",
               description: "The full GMN Hot 50: the 50 most-watched games on Twitch right now, ranked by live viewers and enriched with Steam player counts. Updated continuously." },
   articles: { path: "/articles", title: "Latest Gaming News",
@@ -372,6 +390,7 @@ function Header() {
 
           <div className="nav-links" data-open={open}>
             <NavLink to="/" end>Home</NavLink>
+            <NavLink to="/billboard">Billboard</NavLink>
             <Link to="/articles"             className={onArticles && (tag === "all" || tag === "news")    ? "active" : ""}>News</Link>
             <Link to="/articles?tag=releases"className={onArticles && tag === "releases"                   ? "active" : ""}>Releases</Link>
             <NavLink to="/videos">Videos</NavLink>
@@ -770,7 +789,7 @@ function MiniSkeleton({ rows = 5 }) {
 }
 
 function HomePage() {
-  usePageMeta(PAGE_META.home);
+  usePageMeta(PAGE_META.billboard);
   const API_BASE   = useApiBase();
   const API_ORIGIN = useApiOrigin();
 
@@ -1806,8 +1825,8 @@ function BlogPage() {
 function AboutPage() {
   usePageMeta(PAGE_META.about);
   const stats = [
-    { label: "Games Tracked",   value: "50+" },
-    { label: "News Sources",    value: "5" },
+    { label: "Games Tracked",   value: "200 daily" },
+    { label: "News Sources",    value: "12" },
     { label: "Movies Rated",    value: "Growing" },
     { label: "Updated",         value: "Live" },
   ];
@@ -2346,7 +2365,7 @@ function GameDetailPage() {
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 20px 60px" }}>
       {/* Back */}
-      <a href="/" style={{ color: "var(--muted)", fontSize: 13, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 20, textDecoration: "none" }}>
+      <a href="/billboard" style={{ color: "var(--muted)", fontSize: 13, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 20, textDecoration: "none" }}>
         ← Back to Hot 50
       </a>
 
