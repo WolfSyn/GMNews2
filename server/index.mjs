@@ -435,6 +435,8 @@ const NON_GAME_CATEGORIES = new Set([
   "Bingo",
   "Sleep & Relaxation",
   "Body Art",
+  "Kings League",
+  "Always On",
 ]);
 
 function isRealGame(name) {
@@ -1366,6 +1368,85 @@ app.get("/api/admin/snapshot", (req, res) => {
   if (!key || req.query.key !== key) return res.status(403).json({ error: "forbidden" });
   snapshotHot50({ force: true });
   res.json({ started: true, note: "Check the Render logs for 'Archived Hot 50 snapshot'." });
+});
+
+// Drop anything that is not a real game (older snapshots may still hold
+// categories we now filter, like Kings League) and renumber the ranks.
+function cleanRanked(rows) {
+  return rows
+    .filter(r => isRealGame(r.game_name))
+    .sort((a, b) => a.rank - b.rank)
+    .map((r, i) => ({ ...r, rank: i + 1 }));
+}
+
+// Analytics for the homepage hero, built from the daily snapshots:
+//   top    - the 10 biggest games in the latest snapshot
+//   totals - total Twitch viewers across the tracked games, per day
+//   mover  - biggest climber vs the previous snapshot, with its rank history
+// Only games in the top 50 on BOTH days count as movers, so tiny long-tail
+// jumps (e.g. #158 -> #50) don't win.
+app.get("/api/charts/analytics", async (_req, res) => {
+  const cached = getCache("chart_analytics");
+  if (cached) return res.json(cached);
+  try {
+    const { data: totals, error: tErr } = await supabase.rpc("hot50_daily_totals", { p_days: 14 });
+    if (tErr) throw tErr;
+    if (!totals?.length) return res.json({ totals: [], top: [], mover: null, runnersUp: [] });
+
+    const latest = totals[totals.length - 1].snapshot_date;
+    const prev   = totals.length > 1 ? totals[totals.length - 2].snapshot_date : null;
+
+    const { data: topRows, error: kErr } = await supabase.from("hot50_snapshots")
+      .select("rank,game_name,viewers,cover_url,steam_players,igdb_rating")
+      .eq("snapshot_date", latest).lte("rank", 40).order("rank");
+    if (kErr) throw kErr;
+
+    let mover = null, runnersUp = [];
+    if (prev) {
+      const { data: rows, error } = await supabase.from("hot50_snapshots")
+        .select("snapshot_date,rank,game_name,viewers,cover_url")
+        .in("snapshot_date", [latest, prev]).lte("rank", 70);
+      if (error) throw error;
+      const latestRows = cleanRanked(rows.filter(r => r.snapshot_date === latest)).filter(r => r.rank <= 50);
+      const prevRows   = cleanRanked(rows.filter(r => r.snapshot_date === prev)).filter(r => r.rank <= 50);
+      const prevRank = {};
+      for (const r of prevRows) prevRank[r.game_name] = r.rank;
+      const moves = latestRows
+        .filter(r => prevRank[r.game_name])
+        .map(r => ({
+          name: r.game_name, rank: r.rank, prevRank: prevRank[r.game_name],
+          gain: prevRank[r.game_name] - r.rank, viewers: r.viewers, coverUrl: r.cover_url,
+        }))
+        .filter(m => m.gain > 0)
+        .sort((a, b) => b.gain - a.gain || b.viewers - a.viewers);
+      mover = moves[0] || null;
+      runnersUp = moves.slice(1, 3).map(m => ({ name: m.name, gain: m.gain }));
+
+      if (mover) {
+        const { data: hist } = await supabase.from("hot50_snapshots")
+          .select("snapshot_date,rank,viewers")
+          .eq("game_name", mover.name)
+          .in("snapshot_date", totals.map(t => t.snapshot_date))
+          .order("snapshot_date");
+        mover.history = (hist || []).map(h => ({ date: h.snapshot_date, rank: h.rank, viewers: h.viewers }));
+      }
+    }
+
+    const out = {
+      date: latest, prevDate: prev,
+      totals: totals.map(t => ({ date: t.snapshot_date, viewers: Number(t.total_viewers) })),
+      top: cleanRanked(topRows || []).slice(0, 10).map(r => ({
+        rank: r.rank, name: r.game_name, viewers: r.viewers, coverUrl: r.cover_url,
+        steamPlayers: r.steam_players, igdbRating: r.igdb_rating,
+      })),
+      mover, runnersUp,
+    };
+    setCache("chart_analytics", out, 30 * 60 * 1000);
+    res.json(out);
+  } catch (e) {
+    console.error("analytics error:", e);
+    res.status(500).json({ error: e.message || "analytics failed" });
+  }
 });
 
 // Read API for clients / reports.
