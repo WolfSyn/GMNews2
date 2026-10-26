@@ -140,7 +140,7 @@ export default function LandingPage({ apiOrigin, apiBase, NewsletterForm, decode
               Studios, publishers and agencies can get our daily history of the top 200 games:
               Twitch viewers, Steam players and ratings. Tell us what you need and we will get back to you.
             </p>
-            <Link className="btn-primary" to="/support">Request GMN data →</Link>
+            <Link className="btn-primary" to="/data">Request GMN data →</Link>
           </div>
           <ul>
             <li>Daily snapshots of 200 games</li>
