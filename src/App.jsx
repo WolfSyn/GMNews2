@@ -720,7 +720,7 @@ function Footer() {
           {" · "}
           <Link to="/support">Support</Link>
         </p>
-        <p>© {new Date().getFullYear()} GMN News · GMN Tech</p>
+        <p>© {new Date().getFullYear()} GMN News · GMN Data</p>
       </div>
     </footer>
   );
